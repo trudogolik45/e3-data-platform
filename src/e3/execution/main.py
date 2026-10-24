@@ -10,10 +10,9 @@ import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import cast
 
 import boto3
-from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRecord, TopicPartition
+from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from botocore.config import Config
 from kubernetes_asyncio import config as kube_config
 from kubernetes_asyncio.client import ApiClient, CustomObjectsApi
@@ -24,12 +23,14 @@ from e3.execution.controller import ExecutionController
 from e3.execution.kubernetes import KubernetesSparkApplications
 from e3.execution.results import StoredResults
 from e3.execution.settings import ExecutionSettings
+from e3.shared.kafka import Record, consume_batch, manual_commit_consumer, reliable_producer
 from e3.shared.messages import COMMANDS_TOPIC, EVENTS_TOPIC, ExecutionEvent, parse_command
 from e3.shared.storage import ObjectStorage
 
 log = logging.getLogger(__name__)
 
 RETRY_SECONDS = 5
+COMMAND_BATCH = 100
 
 
 class KafkaEvents:
@@ -46,18 +47,11 @@ class CommandConsumer:
         self._controller = controller
 
     async def poll(self, timeout_ms: int) -> int:
-        batches = cast(
-            "dict[TopicPartition, list[ConsumerRecord[bytes, bytes]]]",
-            await self._consumer.getmany(timeout_ms=timeout_ms),
+        return await consume_batch(
+            self._consumer, self._submit, timeout_ms=timeout_ms, max_records=COMMAND_BATCH
         )
-        records = [record for batch in batches.values() for record in batch]
-        for record in records:
-            await self._submit(record)
-        if records:
-            await self._consumer.commit()
-        return len(records)
 
-    async def _submit(self, record: "ConsumerRecord[bytes, bytes]") -> None:
+    async def _submit(self, record: Record) -> None:
         try:
             command = parse_command(record.value or b"")
         except ValidationError:
@@ -90,16 +84,10 @@ async def _commands(
     settings: ExecutionSettings,
 ) -> AsyncGenerator[tuple[CommandConsumer, ExecutionController]]:
     await _load_kube_config()
-    consumer = AIOKafkaConsumer(
-        COMMANDS_TOPIC,
-        bootstrap_servers=settings.kafka_bootstrap_servers,
-        group_id=settings.execution_group_id,
-        enable_auto_commit=False,
-        auto_offset_reset="earliest",
+    consumer = manual_commit_consumer(
+        COMMANDS_TOPIC, settings.kafka_bootstrap_servers, settings.execution_group_id
     )
-    producer = AIOKafkaProducer(
-        bootstrap_servers=settings.kafka_bootstrap_servers, acks="all", enable_idempotence=True
-    )
+    producer = reliable_producer(settings.kafka_bootstrap_servers)
     api = ApiClient()
     try:
         await producer.start()
