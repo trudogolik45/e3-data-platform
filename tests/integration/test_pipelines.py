@@ -137,6 +137,13 @@ def with_unconnected_publish(block: str) -> Graph:
     return graph
 
 
+def with_two_publishes_to_one_output_slot(block: str) -> Graph:
+    graph = linear_graph(block)
+    graph["nodes"].append(publish_node("publish_again", "result"))
+    graph["edges"].append(edge(at("filter", "result"), at("publish_again", "data")))
+    return graph
+
+
 def with_duplicate_node_ids(block: str) -> Graph:
     graph = linear_graph(block)
     graph["nodes"].append(block_node("filter", block))
@@ -155,6 +162,7 @@ def with_duplicate_node_ids(block: str) -> Graph:
         (with_duplicate_slot_names, "source"),
         (with_publish_to_missing_output_slot, "ghost"),
         (with_unconnected_publish, "data"),
+        (with_two_publishes_to_one_output_slot, "result"),
         (with_duplicate_node_ids, "filter"),
     ],
 )

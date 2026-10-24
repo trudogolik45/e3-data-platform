@@ -35,6 +35,7 @@ def validate_graph(graph: PipelineGraph, specs: Mapping[BlockRef, BlockSpec]) ->
     _check_unique_slot_names(graph)
     _check_blocks_exist(graph, specs)
     _check_publish_slots(graph)
+    _check_one_publish_per_slot(graph)
     ports = {node.id: _ports(node, specs) for node in graph.nodes}
     _check_edges(graph, ports)
     _check_required_inputs(graph, ports)
@@ -65,6 +66,16 @@ def _check_publish_slots(graph: PipelineGraph) -> None:
         if isinstance(node, BlockNode) or node.output_slot in output_slots:
             continue
         raise GraphInvalid(f"Publish Dataset {node.id}: нет Output Slot {node.output_slot}")
+
+
+def _check_one_publish_per_slot(graph: PipelineGraph) -> None:
+    repeated = _repeated(
+        node.output_slot for node in graph.nodes if not isinstance(node, BlockNode)
+    )
+    if repeated:
+        raise GraphInvalid(
+            f"в Output Slot публикуют несколько Publish Dataset: {', '.join(repeated)}"
+        )
 
 
 def _ports(node: Node, specs: Mapping[BlockRef, BlockSpec]) -> _Ports:
