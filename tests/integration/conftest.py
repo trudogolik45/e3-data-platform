@@ -144,6 +144,24 @@ class Api:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         return await self.client.post("/api/v1/blocks", json=spec, headers=headers)
 
+    async def create_pipeline(self, name: str, project_id: UUID | None = None) -> httpx.Response:
+        body = {"project_id": str(project_id or self.dev_project_id), "name": name}
+        return await self.client.post("/api/v1/pipelines", json=body)
+
+    async def new_pipeline(self, name: str) -> UUID:
+        response = await self.create_pipeline(name)
+        assert response.status_code == 201, response.text
+        return UUID(response.json()["pipeline_id"])
+
+    async def save_draft(self, pipeline_id: UUID, graph: dict[str, Any]) -> httpx.Response:
+        return await self.client.put(f"/api/v1/pipelines/{pipeline_id}/draft", json=graph)
+
+    async def publish(self, pipeline_id: UUID) -> httpx.Response:
+        return await self.client.post(f"/api/v1/pipelines/{pipeline_id}/versions")
+
+    async def pipeline_version(self, pipeline_id: UUID, version_number: int) -> httpx.Response:
+        return await self.client.get(f"/api/v1/pipelines/{pipeline_id}/versions/{version_number}")
+
     async def upload_csv(self, dataset_id: UUID, data: bytes) -> httpx.Response:
         upload = await self.start_upload(dataset_id, data)
         await self.put_file(upload, data)

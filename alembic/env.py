@@ -9,13 +9,14 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from e3.blocks.models import Base as BlocksBase
 from e3.catalog.models import Base as CatalogBase
+from e3.pipelines.models import Base as PipelinesBase
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-target_metadata = [CatalogBase.metadata, BlocksBase.metadata]
+target_metadata = [CatalogBase.metadata, BlocksBase.metadata, PipelinesBase.metadata]
 
 
 def database_url() -> str:
