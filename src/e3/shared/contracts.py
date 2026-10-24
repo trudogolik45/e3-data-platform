@@ -10,6 +10,10 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from e3.shared.manifest import DataFormat, DataSchema
 
+# Блок кладёт свой ExecutionResult в `{output_prefix}/result.json`: оттуда его
+# забирает Execution Controller.
+RESULT_FILE = "result.json"
+
 # Неизменяемая ссылка на образ: `<repo>@sha256:<64 hex>`. Теги вроде `:latest` не годятся.
 OCI_DIGEST_PATTERN = r"^[^\s@]+@sha256:[0-9a-f]{64}$"
 

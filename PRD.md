@@ -220,6 +220,8 @@ class ExecutionResult(BaseModel):
     metrics: dict[str, float] = {}
 ```
 
+Блок пишет данные и manifests только под `output_prefix`, а свой `ExecutionResult` — в `{output_prefix}/result.json`. Оттуда его забирает Execution Controller, когда `SparkApplication` завершился, и шлёт в `ExecutionSucceeded`.
+
 Вход BLOCK-узла — это либо `DatasetVersion` из Input Slot, либо принятый `NodeOutput` upstream-узла. В обоих случаях он приходит как `ResolvedInput`. `outputs` — это `port → manifest_uri` подготовленных manifests, а не `DatasetVersion`.
 
 Это разделяет три события:

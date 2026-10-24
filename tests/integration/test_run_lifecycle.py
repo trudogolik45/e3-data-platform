@@ -17,8 +17,8 @@ from e3.api.app import create_app
 from e3.runs import EventConsumer, OutboxRelay, RunOrchestrator, event_consumer, kafka_publisher
 from e3.settings import Settings
 from e3.shared.contracts import DatasetVersionRef
-from e3.shared.messages import SubmitExecution
-from tests.fakes.execution_controller import FakeExecutionController, started, succeeded
+from e3.shared.messages import SubmitExecution, started, succeeded
+from tests.fakes.execution_controller import FakeExecutionController
 from tests.integration.conftest import Api, read_object
 from tests.integration.test_start_pipeline_run import run_request
 

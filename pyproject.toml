@@ -1,7 +1,7 @@
 [project]
 name = "e3"
 version = "0.1.0"
-description = "E3 Data Platform — Control Plane"
+description = "E3 Data Platform — Control Plane и Execution Controller"
 authors = [
     { name = "trudogolik45", email = "210735425+trudogolik45@users.noreply.github.com" }
 ]
@@ -13,6 +13,7 @@ dependencies = [
     "boto3>=1.43.118",
     "fastapi>=0.162.0",
     "httpx>=0.28.1",
+    "kubernetes-asyncio>=36.1.0",
     "pydantic-settings>=2.16.1",
     "pyyaml>=6.0.3",
     "sqlalchemy[asyncio]>=2.1.6",
@@ -39,10 +40,13 @@ dev = [
 [project.scripts]
 e3-contracts-schema = "e3.shared.schemas:print_json_schema"
 e3-register-block = "e3.cli.register_block:main"
+e3-execution-controller = "e3.execution.main:main"
 
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# Блоки исполняются в образе Spark с его Python 3.10.
+per-file-target-version = { "blocks/**" = "py310" }
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
@@ -104,7 +108,15 @@ allowed_importers = ["e3.runs"]
 name = "shared не зависит от доменных модулей"
 type = "forbidden"
 source_modules = ["e3.shared"]
-forbidden_modules = ["e3.identity", "e3.catalog", "e3.blocks", "e3.pipelines", "e3.runs", "e3.api"]
+forbidden_modules = [
+    "e3.identity",
+    "e3.catalog",
+    "e3.blocks",
+    "e3.pipelines",
+    "e3.runs",
+    "e3.api",
+    "e3.execution",
+]
 
 [[tool.importlinter.contracts]]
 name = "Код продукта не импортирует тесты и Fake Execution Controller"
@@ -126,4 +138,23 @@ forbidden_modules = [
     "e3.pipelines",
     "e3.runs",
     "e3.api",
+]
+
+[[tool.importlinter.contracts]]
+name = "Execution Controller — Execution Plane: только e3.shared, без PostgreSQL (ADR-0001)"
+type = "forbidden"
+source_modules = ["e3.execution"]
+forbidden_modules = [
+    "sqlalchemy",
+    "asyncpg",
+    "alembic",
+    "fastapi",
+    "e3.settings",
+    "e3.identity",
+    "e3.catalog",
+    "e3.blocks",
+    "e3.pipelines",
+    "e3.runs",
+    "e3.api",
+    "e3.cli",
 ]

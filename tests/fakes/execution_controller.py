@@ -28,11 +28,12 @@ from e3.shared.messages import (
     EVENTS_TOPIC,
     ExecutionEvent,
     ExecutionFailed,
-    ExecutionStarted,
     ExecutionSucceeded,
-    Failure,
     SubmitExecution,
+    failed,
     parse_command,
+    started,
+    succeeded,
 )
 
 DATA_FILE = "data/part-00000.parquet"
@@ -105,14 +106,7 @@ class FakeExecutionController:
 
     async def fail(self, command: SubmitExecution, error: str) -> ExecutionFailed:
         """Падает до записи данных."""
-        return await self.send(
-            ExecutionFailed(
-                node_run_id=command.node_run_id,
-                attempt_id=command.attempt_id,
-                trace_id=command.trace_id,
-                payload=Failure(error=error),
-            )
-        )
+        return await self.send(failed(command, error))
 
     async def send[E: ExecutionEvent](self, event: E) -> E:
         """Шлёт событие; повторный вызов с тем же событием — повторная доставка."""
@@ -132,21 +126,6 @@ class FakeExecutionController:
 
     def _key(self, uri: str) -> str:
         return uri.removeprefix(f"s3://{self._bucket}/")
-
-
-def started(command: SubmitExecution) -> ExecutionStarted:
-    return ExecutionStarted(
-        node_run_id=command.node_run_id, attempt_id=command.attempt_id, trace_id=command.trace_id
-    )
-
-
-def succeeded(command: SubmitExecution, result: ExecutionResult) -> ExecutionSucceeded:
-    return ExecutionSucceeded(
-        node_run_id=command.node_run_id,
-        attempt_id=command.attempt_id,
-        trace_id=command.trace_id,
-        payload=result,
-    )
 
 
 def write_parquet_output(

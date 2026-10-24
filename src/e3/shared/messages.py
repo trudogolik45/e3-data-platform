@@ -77,6 +77,30 @@ ExecutionEvent = Annotated[
 _events = TypeAdapter[ExecutionEvent](ExecutionEvent)
 
 
+def started(command: SubmitExecution) -> ExecutionStarted:
+    return ExecutionStarted(
+        node_run_id=command.node_run_id, attempt_id=command.attempt_id, trace_id=command.trace_id
+    )
+
+
+def succeeded(command: SubmitExecution, result: ExecutionResult) -> ExecutionSucceeded:
+    return ExecutionSucceeded(
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
+        payload=result,
+    )
+
+
+def failed(command: SubmitExecution, error: str) -> ExecutionFailed:
+    return ExecutionFailed(
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
+        payload=Failure(error=error),
+    )
+
+
 def parse_event(raw: bytes) -> ExecutionEvent:
     return _events.validate_json(raw)
 
