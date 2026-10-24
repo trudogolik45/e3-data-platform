@@ -14,7 +14,7 @@
 """
 
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -218,16 +218,14 @@ class RunOrchestrator:
             await self._apply(session, run, node, event)
 
     async def finalize_pending(self) -> int:
+        """Возвращает число NodeRun, по которым проход продвинулся."""
         ids = await self._node_ids(NodeKind.BLOCK, NodeState.FINALIZING)
-        for node_run_id in ids:
-            await self._retrying(self._finalize, node_run_id)
-        return len(ids)
+        return sum([await _isolated(self._finalize, node_run_id) for node_run_id in ids])
 
     async def publish_pending(self) -> int:
+        """Возвращает число NodeRun, по которым проход продвинулся."""
         ids = await self._node_ids(NodeKind.SYSTEM, NodeState.RUNNING)
-        for node_run_id in ids:
-            await self._retrying(self._publish, node_run_id)
-        return len(ids)
+        return sum([await _isolated(self._publish, node_run_id) for node_run_id in ids])
 
     async def _create(
         self,
@@ -257,7 +255,8 @@ class RunOrchestrator:
             )
             if inserted is None:
                 existing = await _find_by_key(session, project_id, idempotency_key)
-                assert existing is not None
+                if existing is None:
+                    raise RuntimeError(f"PipelineRun с ключом {idempotency_key} исчез")
                 return _same_request(existing, request)
             session.add_all(build_node_runs(run_id, graph, request, specs))
             row = await session.get_one(PipelineRunRow, run_id)
@@ -288,7 +287,8 @@ class RunOrchestrator:
         if node.kind == NodeKind.SYSTEM:
             node.state = NodeState.RUNNING
             return
-        assert node.executable_ref is not None
+        if node.executable_ref is None:
+            raise RuntimeError(f"у BLOCK NodeRun {node.id} нет executable_ref")
         attempt_id = uuid4()
         context = ExecutionContext(
             node_run_id=node.id,
@@ -324,11 +324,11 @@ class RunOrchestrator:
                 data_schema=version.data_schema,
                 source=ref,
             )
-        output = await session.get_one(NodeOutputRow, (ref.node_run_id, ref.port))
+        output = _to_node_output(await session.get_one(NodeOutputRow, (ref.node_run_id, ref.port)))
         return ResolvedInput(
             manifest_uri=output.manifest_uri,
-            format=_format(output.format),
-            data_schema=DataSchema.model_validate(output.data_schema),
+            format=output.format,
+            data_schema=output.data_schema,
             source=ref,
         )
 
@@ -360,28 +360,36 @@ class RunOrchestrator:
         await self._transition(node_run_id, NodeState.FINALIZING, _accepted(result, manifests))
 
     async def _publish(self, node_run_id: UUID) -> None:
-        async with self._sessions() as session:
-            node = await session.get_one(NodeRunRow, node_run_id)
-            run = await session.get_one(PipelineRunRow, node.pipeline_run_id)
-            source = node_inputs(node)[PUBLISH_INPUT_PORT]
-            output = None
-            if isinstance(source, NodeOutputRef):
-                output = await session.get(NodeOutputRow, (source.node_run_id, source.port))
-        if output is None or not isinstance(source, NodeOutputRef):
+        publication = await self._publication(node_run_id)
+        if publication is None:
             await self._transition(node_run_id, NodeState.RUNNING, _failed("нет NodeOutput"))
             return
-        assert node.target_dataset_id is not None
         try:
             version = await self._datasets.publish(
-                project_id=run.project_id,
-                dataset_id=node.target_dataset_id,
-                source=source,
-                manifest_uri=output.manifest_uri,
+                project_id=publication.project_id,
+                dataset_id=publication.dataset_id,
+                source=publication.source,
+                manifest_uri=publication.manifest_uri,
             )
         except (catalog.PublicationRejected, catalog.DatasetNotFound) as error:
             await self._transition(node_run_id, NodeState.RUNNING, _failed(str(error)))
             return
         await self._transition(node_run_id, NodeState.RUNNING, _published(version.version_id))
+
+    async def _publication(self, node_run_id: UUID) -> "_Publication | None":
+        """Что публикует узел Publish Dataset; `None` — входа NodeOutput нет."""
+        async with self._sessions() as session:
+            node = await session.get_one(NodeRunRow, node_run_id)
+            source = node_inputs(node)[PUBLISH_INPUT_PORT]
+            if not isinstance(source, NodeOutputRef):
+                return None
+            output = await session.get(NodeOutputRow, (source.node_run_id, source.port))
+            if output is None:
+                return None
+            run = await session.get_one(PipelineRunRow, node.pipeline_run_id)
+        if node.target_dataset_id is None:
+            raise RuntimeError(f"у Publish Dataset NodeRun {node.id} нет целевого Dataset")
+        return _Publication(run.project_id, node.target_dataset_id, source, output.manifest_uri)
 
     async def _transition(self, node_run_id: UUID, expected: NodeState, change: NodeChange) -> None:
         """Меняет NodeRun, если он всё ещё в `expected`, и продвигает запуск."""
@@ -402,12 +410,29 @@ class RunOrchestrator:
             )
             return list(ids)
 
-    async def _retrying(self, step: Callable[[UUID], Any], node_run_id: UUID) -> None:
-        """Недоступное хранилище не роняет проход: узел повторится в следующем."""
-        try:
-            await step(node_run_id)
-        except StorageUnavailable:
-            log.warning("хранилище недоступно, NodeRun %s повторится", node_run_id, exc_info=True)
+
+@dataclass(frozen=True)
+class _Publication:
+    project_id: UUID
+    dataset_id: UUID
+    source: NodeOutputRef
+    manifest_uri: str
+
+
+async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUID) -> bool:
+    """Сбой одного NodeRun не роняет проход: узел повторится в следующем.
+
+    Возвращает, продвинулся ли узел; сбой — не продвижение, чтобы цикл взял паузу.
+    """
+    try:
+        await advance(node_run_id)
+    except StorageUnavailable:
+        log.warning("хранилище недоступно, NodeRun %s повторится", node_run_id, exc_info=True)
+        return False
+    except Exception:
+        log.exception("NodeRun %s не продвинулся, повторится", node_run_id)
+        return False
+    return True
 
 
 def _failed(error: str) -> NodeChange:
@@ -458,7 +483,8 @@ async def _lock_node(
     node = await session.scalar(
         select(NodeRunRow).where(NodeRunRow.id == node_run_id).with_for_update()
     )
-    assert run is not None and node is not None
+    if run is None or node is None:
+        return None
     return run, node
 
 
@@ -507,15 +533,16 @@ def _to_node_run(row: NodeRunRow, outputs: list[NodeOutputRow]) -> NodeRun:
         kind=NodeKind(row.kind),
         state=NodeState(row.state),
         attempt_id=row.current_attempt_id,
-        outputs=[
-            NodeOutput(
-                port=output.port,
-                manifest_uri=output.manifest_uri,
-                format=_format(output.format),
-                data_schema=DataSchema.model_validate(output.data_schema),
-            )
-            for output in outputs
-        ],
+        outputs=[_to_node_output(output) for output in outputs],
         published_version_id=row.published_version_id,
         error=row.error,
+    )
+
+
+def _to_node_output(row: NodeOutputRow) -> NodeOutput:
+    return NodeOutput(
+        port=row.port,
+        manifest_uri=row.manifest_uri,
+        format=_format(row.format),
+        data_schema=DataSchema.model_validate(row.data_schema),
     )

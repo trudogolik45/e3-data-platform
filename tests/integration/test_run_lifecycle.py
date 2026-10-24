@@ -4,6 +4,7 @@
 промежуточные состояния, и порядок не зависит от фоновых задач.
 """
 
+import json
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -12,15 +13,18 @@ from uuid import UUID, uuid4
 import httpx
 import pytest
 from mypy_boto3_s3 import S3Client
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from e3.api.app import create_app
 from e3.runs import EventConsumer, OutboxRelay, RunOrchestrator, event_consumer, kafka_publisher
+from e3.runs.models import InboxRow, OutboxRow
 from e3.settings import Settings
 from e3.shared.contracts import DatasetVersionRef
-from e3.shared.messages import SubmitExecution, started, succeeded
+from e3.shared.messages import SubmitExecution, failed, started, succeeded
+from e3.shared.storage import ObjectStorage, StorageUnavailable
 from tests.fakes.execution_controller import FakeExecutionController
-from tests.integration.conftest import Api, read_object
-from tests.integration.test_start_pipeline_run import run_request
+from tests.integration.conftest import Api, read_object, run_request, storage_like
 
 pytestmark = pytest.mark.integration
 
@@ -170,6 +174,37 @@ async def test_redelivered_succeeded_creates_no_second_output_or_version(plant: 
     assert (await plant.api.run(run_id))["state"] == "SUCCEEDED"
 
 
+async def test_inbox_drops_event_already_received_even_if_state_accepts_it(
+    plant: Plant,
+) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    received = await plant.fake.send(started(command))
+    await plant.consume_until(run_id, "read", "RUNNING")
+
+    await plant.fake.send(
+        failed(command, "повтор").model_copy(update={"event_id": received.event_id})
+    )
+    await plant.events.poll(timeout_ms=1000)
+
+    assert await plant.state(run_id, "read") == "RUNNING"
+    assert await inbox_has(plant, received.event_id)
+    await plant.fake.fail(command, "executor lost")
+    await plant.consume_until(run_id, "read", "FAILED")
+
+
+async def inbox_has(plant: Plant, event_id: UUID) -> bool:
+    engine = create_async_engine(plant.settings.database_url)
+    try:
+        async with engine.connect() as connection:
+            found = await connection.scalar(
+                select(InboxRow.event_id).where(InboxRow.event_id == event_id)
+            )
+    finally:
+        await engine.dispose()
+    return found is not None
+
+
 async def test_failed_execution_fails_run_without_publication(plant: Plant) -> None:
     run_id = await plant.start()
     command = await plant.submitted(run_id)
@@ -203,6 +238,93 @@ async def test_command_survives_crash_between_state_change_and_publication(
     command = await plant.submitted(run_id)
 
     assert str(command.node_run_id) == (await plant.node(run_id, "read"))["node_run_id"]
+
+
+class StorageDown(ObjectStorage):
+    async def read(self, key: str) -> bytes:
+        raise StorageUnavailable("503 SlowDown")
+
+
+class FirstReadBreaks(ObjectStorage):
+    broken = False
+
+    async def read(self, key: str) -> bytes:
+        if not self.broken:
+            self.broken = True
+            raise RuntimeError("неожиданный сбой")
+        return await super().read(key)
+
+
+async def finalizing(plant: Plant) -> str:
+    run_id = await plant.start()
+    await plant.fake.succeed(await plant.submitted(run_id))
+    await plant.consume_until(run_id, "read", "FINALIZING")
+    return run_id
+
+
+def orchestrator_with(plant: Plant, storage: ObjectStorage) -> RunOrchestrator:
+    return create_app(plant.settings, storage=storage).state.runs
+
+
+async def test_storage_outage_during_finalizing_is_not_reported_as_progress(
+    plant: Plant,
+) -> None:
+    run_id = await finalizing(plant)
+    outage = orchestrator_with(plant, storage_like(StorageDown, plant.settings))
+
+    progressed = await outage.finalize_pending()
+
+    assert progressed == 0
+    assert await plant.state(run_id, "read") == "FINALIZING"
+    await plant.finish()
+    assert (await plant.api.run(run_id))["state"] == "SUCCEEDED"
+
+
+async def test_unexpected_failure_of_one_node_does_not_stop_finalizing_others(
+    plant: Plant,
+) -> None:
+    runs = [await finalizing(plant), await finalizing(plant)]
+    flaky = orchestrator_with(plant, storage_like(FirstReadBreaks, plant.settings))
+
+    progressed = await flaky.finalize_pending()
+
+    states = sorted([await plant.state(run_id, "read") for run_id in runs])
+    assert (progressed, states) == (1, ["FINALIZING", "SUCCEEDED"])
+
+
+class ChecksOutboxIsFree:
+    """Broker, который во время отправки проверяет, что строка outbox не заблокирована."""
+
+    def __init__(self, plant: Plant) -> None:
+        self._plant = plant
+        self.resent_concurrently = 0
+
+    async def send(self, topic: str, *, key: bytes, value: bytes) -> None:
+        engine = create_async_engine(self._plant.settings.database_url)
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(
+                    select(OutboxRow.id)
+                    .where(OutboxRow.id == UUID(json.loads(value)["event_id"]))
+                    .with_for_update(nowait=True)
+                )
+        finally:
+            await engine.dispose()
+        concurrent = self._plant.orchestrator.outbox_relay(BrokerDown())
+        self.resent_concurrently += await concurrent.publish_pending()
+
+
+async def test_relay_holds_no_outbox_locks_while_waiting_for_broker(plant: Plant) -> None:
+    run_id = await plant.start()
+    await drain(plant.orchestrator.dispatch_pending)
+    broker = ChecksOutboxIsFree(plant)
+
+    sent = await plant.orchestrator.outbox_relay(broker).publish_pending()
+
+    assert sent >= 1
+    assert broker.resent_concurrently == 0
+    assert await plant.orchestrator.outbox_relay(BrokerDown()).publish_pending() == 0
+    assert await plant.state(run_id, "read") == "QUEUED"
 
 
 def published_manifest(plant: Plant, dataset_id: str, version: dict[str, Any]) -> bytes:

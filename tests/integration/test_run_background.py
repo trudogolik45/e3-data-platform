@@ -12,8 +12,7 @@ from mypy_boto3_s3 import S3Client
 from e3.api.app import create_app
 from e3.settings import Settings
 from tests.fakes.execution_controller import FakeExecutionController
-from tests.integration.conftest import Api, free_port
-from tests.integration.test_start_pipeline_run import run_request
+from tests.integration.conftest import Api, free_port, run_request
 
 pytestmark = pytest.mark.integration
 

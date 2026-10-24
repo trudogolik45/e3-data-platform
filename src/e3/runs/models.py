@@ -78,6 +78,7 @@ class OutboxRow(Base):
     payload: Mapped[dict[str, Any]]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
     published_at: Mapped[datetime | None]
+    claimed_until: Mapped[datetime | None]
 
 
 class InboxRow(Base):

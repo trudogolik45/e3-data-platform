@@ -3,43 +3,9 @@ from uuid import uuid4
 
 import pytest
 
-from tests.integration.conftest import Api
-from tests.integration.graphs import block_spec, port, read_graph
+from tests.integration.conftest import Api, run_request
 
 pytestmark = pytest.mark.integration
-
-CSV = b"id,name\n1,alpha\n2,beta\n"
-
-
-async def new_read_pipeline(api: Api) -> tuple[str, int]:
-    block = f"read-{uuid4().hex}"
-    registered = await api.register_block(block_spec(block, [port("source")], [port("data")]))
-    assert registered.status_code == 201, registered.text
-    pipeline_id = await api.new_pipeline("read")
-    await api.save_draft(pipeline_id, read_graph(block))
-    published = await api.publish(pipeline_id)
-    assert published.status_code == 201, published.text
-    return str(pipeline_id), published.json()["version_number"]
-
-
-async def run_request(api: Api) -> dict[str, Any]:
-    """Тело `POST /pipeline-runs` для `source → Read → Publish Dataset(result)`."""
-    pipeline_id, version_number = await new_read_pipeline(api)
-    source = await api.new_dataset(f"source-{uuid4()}")
-    uploaded = await api.upload_csv(source, CSV)
-    assert uploaded.status_code == 200, uploaded.text
-    target = await api.new_dataset(f"result-{uuid4()}")
-    return {
-        "pipeline_id": pipeline_id,
-        "pipeline_version": version_number,
-        "inputs": {
-            "source": {
-                "dataset_id": str(source),
-                "version_id": uploaded.json()["version"]["version_id"],
-            }
-        },
-        "outputs": {"result": {"dataset_id": str(target)}},
-    }
 
 
 async def test_run_is_accepted_as_pending_with_exact_bindings(api: Api) -> None:
