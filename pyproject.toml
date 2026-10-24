@@ -141,20 +141,10 @@ forbidden_modules = [
 ]
 
 [[tool.importlinter.contracts]]
-name = "Execution Controller — Execution Plane: только e3.shared, без PostgreSQL (ADR-0001)"
+name = "Execution Controller — Execution Plane: из e3 только e3.shared, без PostgreSQL (ADR-0001)"
 type = "forbidden"
 source_modules = ["e3.execution"]
-forbidden_modules = [
-    "sqlalchemy",
-    "asyncpg",
-    "alembic",
-    "fastapi",
-    "e3.settings",
-    "e3.identity",
-    "e3.catalog",
-    "e3.blocks",
-    "e3.pipelines",
-    "e3.runs",
-    "e3.api",
-    "e3.cli",
-]
+# Любой пакет e3, кроме самого e3.execution и разрешённого ниже e3.shared:
+# новый модуль Control Plane попадает под запрет без правки контракта.
+forbidden_modules = ["e3.*", "sqlalchemy", "asyncpg", "alembic", "fastapi"]
+ignore_imports = ["e3.execution.** -> e3.shared.**"]
