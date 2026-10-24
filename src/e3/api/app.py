@@ -1,3 +1,5 @@
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING
 
@@ -16,7 +18,7 @@ if TYPE_CHECKING:
 
 def create_app(settings: Settings, *, storage: ObjectStorage | None = None) -> FastAPI:
     _ensure_auth_allowed(settings)
-    app = FastAPI(title="E3 Control Plane")
+    app = FastAPI(title="E3 Control Plane", lifespan=_run_orchestrator_in_background(settings))
     app.state.principal = identity.dev_principal(
         user_id=settings.dev_user_id,
         organization_id=settings.dev_organization_id,
@@ -47,6 +49,20 @@ def create_app(settings: Settings, *, storage: ObjectStorage | None = None) -> F
     app.include_router(pipelines.router)
     app.include_router(runs.router)
     return app
+
+
+def _run_orchestrator_in_background(settings: Settings):
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        async with runs.background(
+            app.state.runs,
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            group_id=settings.kafka_group_id,
+            idle_seconds=settings.runs_idle_seconds,
+        ):
+            yield
+
+    return lifespan
 
 
 def create_storage(settings: Settings) -> ObjectStorage:

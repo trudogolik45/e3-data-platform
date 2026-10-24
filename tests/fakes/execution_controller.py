@@ -18,6 +18,7 @@ from typing import Any, Self, cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRecord, TopicPartition
+from aiokafka.admin import AIOKafkaAdminClient
 from mypy_boto3_s3 import S3Client
 
 from e3.shared.contracts import ExecutionResult, ResolvedInput
@@ -40,6 +41,7 @@ COMMAND_TIMEOUT_SECONDS = 15
 
 class FakeExecutionController:
     def __init__(self, bootstrap_servers: str, s3: S3Client, bucket: str) -> None:
+        self._bootstrap_servers = bootstrap_servers
         self._s3 = s3
         self._bucket = bucket
         self._consumer = AIOKafkaConsumer(
@@ -51,11 +53,21 @@ class FakeExecutionController:
         """Слушает только команды, отправленные после старта."""
         await self._producer.start()
         await self._consumer.start()
-        partition = TopicPartition(COMMANDS_TOPIC, 0)
-        self._consumer.assign([partition])
-        await self._consumer.seek_to_end(partition)
-        await self._consumer.position(partition)
+        partitions = await self._command_partitions()
+        self._consumer.assign(partitions)
+        await self._consumer.seek_to_end(*partitions)
+        for partition in partitions:
+            await self._consumer.position(partition)
         return self
+
+    async def _command_partitions(self) -> list[TopicPartition]:
+        admin = AIOKafkaAdminClient(bootstrap_servers=self._bootstrap_servers)
+        await admin.start()
+        try:
+            described: Any = await admin.describe_topics([COMMANDS_TOPIC])
+        finally:
+            await admin.close()
+        return [TopicPartition(COMMANDS_TOPIC, p["partition"]) for p in described[0]["partitions"]]
 
     async def __aexit__(
         self,

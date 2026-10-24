@@ -1,7 +1,7 @@
 """REST API v1 Run Orchestrator."""
 
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -39,7 +39,7 @@ class NodeOutputOut(BaseModel):
     model_config = ConfigDict(serialize_by_alias=True)
 
     port: str
-    state: str = "READY"
+    state: Literal["READY"] = "READY"
     manifest_uri: str
     format: DataFormat
     data_schema: DataSchema = Field(serialization_alias="schema")

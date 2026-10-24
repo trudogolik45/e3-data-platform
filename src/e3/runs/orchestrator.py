@@ -44,7 +44,7 @@ from e3.runs.bindings import (
 from e3.runs.finalization import OutputRejected, execution_prefix, verify_outputs
 from e3.runs.models import NodeOutputRow, NodeRunRow, PipelineRunRow
 from e3.runs.nodes import NodeKind, build_node_runs, node_inputs, progress
-from e3.runs.outbox import enqueue, first_delivery
+from e3.runs.outbox import OutboxRelay, Publisher, enqueue, first_delivery
 from e3.runs.progress import NodeState, RunState, plan
 from e3.shared.contracts import (
     BlockSpec,
@@ -157,6 +157,9 @@ class RunOrchestrator:
         return await self._create(
             pipeline.project_id, version.graph, request, idempotency_key, specs
         )
+
+    def outbox_relay(self, publisher: Publisher) -> OutboxRelay:
+        return OutboxRelay(self._sessions, publisher)
 
     async def get_run(self, pipeline_run_id: UUID) -> PipelineRun:
         async with self._sessions() as session:

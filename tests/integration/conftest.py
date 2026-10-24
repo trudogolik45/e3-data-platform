@@ -1,5 +1,7 @@
+import asyncio
 import base64
 import hashlib
+import socket
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -8,14 +10,17 @@ from uuid import UUID
 import boto3
 import httpx
 import pytest
+from aiokafka.errors import KafkaError
 from alembic import command
 from alembic.config import Config
 from mypy_boto3_s3 import S3Client
 from pydantic import SecretStr
 from testcontainers.community.minio import MinioContainer
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.core.container import DockerContainer
 
 from e3.api.app import create_app
+from e3.runs import ensure_topics
 from e3.settings import Settings
 from e3.shared.storage import ObjectStorage
 
@@ -23,6 +28,8 @@ pytestmark = pytest.mark.integration
 
 BUCKET = "e3-lake"
 PLATFORM_TOKEN = "platform-team-secret"
+KAFKA_IMAGE = "apache/kafka:4.4.0"
+KAFKA_STARTUP_ATTEMPTS = 60
 
 
 @pytest.fixture(scope="session")
@@ -35,6 +42,57 @@ def postgres() -> Iterator[PostgresContainer]:
 def minio() -> Iterator[MinioContainer]:
     with MinioContainer("cgr.dev/chainguard/minio:latest") as container:
         yield container
+
+
+def kafka_container(host_port: int) -> DockerContainer:
+    """Официальный `apache/kafka` в KRaft: KafkaContainer из testcontainers умеет только cp-kafka.
+
+    Advertised listener должен знать внешний порт заранее, поэтому он выбран до старта.
+    """
+    env = {
+        "KAFKA_NODE_ID": "1",
+        "KAFKA_PROCESS_ROLES": "broker,controller",
+        "KAFKA_LISTENERS": "PLAINTEXT://:9092,CONTROLLER://:9093",
+        "KAFKA_ADVERTISED_LISTENERS": f"PLAINTEXT://localhost:{host_port}",
+        "KAFKA_LISTENER_SECURITY_PROTOCOL_MAP": "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT",
+        "KAFKA_CONTROLLER_LISTENER_NAMES": "CONTROLLER",
+        "KAFKA_INTER_BROKER_LISTENER_NAME": "PLAINTEXT",
+        "KAFKA_CONTROLLER_QUORUM_VOTERS": "1@localhost:9093",
+        "KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR": "1",
+        "KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR": "1",
+        "KAFKA_TRANSACTION_STATE_LOG_MIN_ISR": "1",
+        "KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS": "0",
+    }
+    container = DockerContainer(KAFKA_IMAGE).with_bind_ports(9092, host_port)
+    for name, value in env.items():
+        container = container.with_env(name, value)
+    return container
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture(scope="session")
+def kafka_container_bootstrap() -> Iterator[str]:
+    port = free_port()
+    with kafka_container(port):
+        yield f"localhost:{port}"
+
+
+@pytest.fixture(scope="session")
+async def kafka(kafka_container_bootstrap: str) -> str:
+    """Bootstrap брокера с созданными топиками `commands.v1` и `events.v1`."""
+    for _ in range(KAFKA_STARTUP_ATTEMPTS):
+        try:
+            await ensure_topics(kafka_container_bootstrap)
+        except KafkaError:
+            await asyncio.sleep(1)
+            continue
+        return kafka_container_bootstrap
+    raise RuntimeError("Kafka не поднялась")
 
 
 @pytest.fixture(scope="session")

@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     s3_region: str = "us-east-1"
     s3_bucket: str = "e3-lake"
 
+    kafka_bootstrap_servers: str = "localhost:9092"
+    kafka_group_id: str = "e3-run-orchestrator"
+    # Пауза фоновых шагов Run Orchestrator, когда работы нет.
+    runs_idle_seconds: float = Field(default=0.5, gt=0)
+
     # Токен команды платформы для admin API. Не задан — регистрация блоков закрыта.
     platform_token: SecretStr | None = None
 

@@ -309,11 +309,16 @@ Kafka используется только там, где требуется а
   "occurred_at": "2026-10-24T12:00:00Z",
   "type": "ExecutionSucceeded",
   "payload": {
-    "result_manifest": "s3://e3-lake/artifacts/..."
+    "node_run_id": "uuid",
+    "attempt_id": "uuid",
+    "outputs": {"data": "s3://e3-lake/staging/executions/{attempt_id}/data/manifest.json"},
+    "metrics": {}
   }
 }
 
 ```
+
+`payload` выбирается по `type`: `SubmitExecution` — `executable_ref` блока и `ExecutionContext`, `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error`. Ключ сообщения — `node_run_id`.
 
 Гарантии:
 

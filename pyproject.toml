@@ -64,7 +64,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 testpaths = ["tests"]
-markers = ["integration: требует Docker (PostgreSQL и MinIO через testcontainers)"]
+markers = ["integration: требует Docker (PostgreSQL, MinIO и Kafka через testcontainers)"]
 
 [tool.importlinter]
 root_package = "e3"
@@ -105,6 +105,12 @@ name = "shared не зависит от доменных модулей"
 type = "forbidden"
 source_modules = ["e3.shared"]
 forbidden_modules = ["e3.identity", "e3.catalog", "e3.blocks", "e3.pipelines", "e3.runs", "e3.api"]
+
+[[tool.importlinter.contracts]]
+name = "Код продукта не импортирует тесты и Fake Execution Controller"
+type = "forbidden"
+source_modules = ["e3"]
+forbidden_modules = ["tests", "pyarrow"]
 
 [[tool.importlinter.contracts]]
 name = "CLI — тонкий HTTP-клиент: без слоя БД и доменных модулей"
