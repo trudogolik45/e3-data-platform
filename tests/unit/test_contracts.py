@@ -9,8 +9,8 @@ from e3.shared.contracts import (
     DataRef,
     DatasetVersionRef,
     NodeOutputRef,
-    json_schemas,
 )
+from e3.shared.schemas import json_schemas
 
 DIGEST = "registry.local/e3/read@sha256:" + "a" * 64
 
@@ -82,6 +82,8 @@ def test_json_schema_covers_all_contracts() -> None:
         "ExecutionContext",
         "ExecutionResult",
         "Manifest",
+        "SubmitExecution",
+        "ExecutionEvent",
     }
 
 

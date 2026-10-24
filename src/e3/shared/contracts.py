@@ -1,15 +1,14 @@
 """Контракты Backend ↔ DS (PRD §4), общие для Control Plane и Execution Plane.
 
-Публикуются как JSON Schema командой `e3-contracts-schema`.
+Публикуются как JSON Schema командой `e3-contracts-schema` (см. `schemas`).
 """
 
-import json
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from e3.shared.manifest import DataFormat, DataSchema, Manifest
+from e3.shared.manifest import DataFormat, DataSchema
 
 # Неизменяемая ссылка на образ: `<repo>@sha256:<64 hex>`. Теги вроде `:latest` не годятся.
 OCI_DIGEST_PATTERN = r"^[^\s@]+@sha256:[0-9a-f]{64}$"
@@ -82,24 +81,3 @@ class ExecutionResult(BaseModel):
     attempt_id: UUID
     outputs: dict[str, str] = Field(description="port → manifest_uri подготовленного manifest")
     metrics: dict[str, float] = Field(default_factory=dict[str, float])
-
-
-CONTRACTS: dict[str, Any] = {
-    "DatasetVersionRef": DatasetVersionRef,
-    "NodeOutputRef": NodeOutputRef,
-    "DataRef": DataRef,
-    "ResolvedInput": ResolvedInput,
-    "PortSpec": PortSpec,
-    "BlockSpec": BlockSpec,
-    "ExecutionContext": ExecutionContext,
-    "ExecutionResult": ExecutionResult,
-    "Manifest": Manifest,
-}
-
-
-def json_schemas() -> dict[str, dict[str, Any]]:
-    return {name: TypeAdapter[Any](contract).json_schema() for name, contract in CONTRACTS.items()}
-
-
-def print_json_schema() -> None:
-    print(json.dumps(json_schemas(), ensure_ascii=False, indent=2))

@@ -46,6 +46,13 @@ class ObjectStorage:
     def uri(self, key: str) -> str:
         return f"s3://{self._bucket}/{key}"
 
+    def key(self, uri: str) -> str:
+        """Обратное к `uri`: ключ объекта в своём bucket, чужие URI — `ValueError`."""
+        prefix = self.uri("")
+        if not uri.startswith(prefix):
+            raise ValueError(f"{uri} не в bucket {self._bucket}")
+        return uri.removeprefix(prefix)
+
     def presign_put(self, key: str, *, checksum_sha256: str, ttl_seconds: int) -> PresignedPut:
         url = self._presign_client.generate_presigned_url(
             "put_object",
@@ -71,6 +78,10 @@ class ObjectStorage:
                 Bucket=self._bucket, Key=key, Range=f"bytes=0-{limit - 1}"
             )
         )
+        return await asyncio.to_thread(response["Body"].read)
+
+    async def read(self, key: str) -> bytes:
+        response = await self._call(lambda: self._client.get_object(Bucket=self._bucket, Key=key))
         return await asyncio.to_thread(response["Body"].read)
 
     async def copy(self, source_key: str, target_key: str) -> None:

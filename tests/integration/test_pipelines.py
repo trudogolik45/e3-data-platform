@@ -1,30 +1,21 @@
 from collections.abc import Callable
-from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 
 from tests.integration.conftest import Api
+from tests.integration.graphs import (
+    Graph,
+    at,
+    block_node,
+    block_spec,
+    edge,
+    port,
+    publish_node,
+    slot,
+)
 
 pytestmark = pytest.mark.integration
-
-Graph = dict[str, Any]
-
-
-def port(name: str, *, required: bool = True) -> dict[str, Any]:
-    return {"name": name, "data_type": "dataset", "required": required}
-
-
-def block_spec(name: str, inputs: list[dict[str, Any]], outputs: list[dict[str, Any]]) -> Graph:
-    return {
-        "name": name,
-        "version": "1.0.0",
-        "runtime": "spark",
-        "inputs": inputs,
-        "outputs": outputs,
-        "parameters_schema": {},
-        "executable_ref": "registry.local/e3/" + name + "@sha256:" + "e" * 64,
-    }
 
 
 @pytest.fixture
@@ -35,31 +26,6 @@ async def filter_block(api: Api) -> str:
     response = await api.register_block(spec)
     assert response.status_code == 201, response.text
     return name
-
-
-def block_node(node_id: str, block: str, version: str = "1.0.0") -> Graph:
-    return {"kind": "BLOCK", "id": node_id, "block": {"name": block, "version": version}}
-
-
-def publish_node(node_id: str, output_slot: str) -> Graph:
-    return {
-        "kind": "SYSTEM",
-        "id": node_id,
-        "system": "publish_dataset",
-        "output_slot": output_slot,
-    }
-
-
-def edge(source: Graph, target: Graph) -> Graph:
-    return {"source": source, "target": target}
-
-
-def at(node: str, port_name: str) -> Graph:
-    return {"node": node, "port": port_name}
-
-
-def slot(name: str) -> Graph:
-    return {"slot": name}
 
 
 def linear_graph(block: str) -> Graph:

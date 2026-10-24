@@ -42,7 +42,11 @@ class UploadRow(Base):
 
 class DatasetVersionRow(Base):
     __tablename__ = "dataset_versions"
-    __table_args__ = (UniqueConstraint("dataset_id", "version_number"),)
+    __table_args__ = (
+        UniqueConstraint("dataset_id", "version_number"),
+        # Один NodeOutput публикуется не больше одного раза.
+        UniqueConstraint("source_node_run_id", "source_port"),
+    )
 
     id: Mapped[UUID] = mapped_column(primary_key=True)
     dataset_id: Mapped[UUID] = mapped_column(ForeignKey("datasets.id"))
@@ -51,4 +55,6 @@ class DatasetVersionRow(Base):
     data_schema: Mapped[dict[str, Any]]
     manifest_uri: Mapped[str]
     upload_id: Mapped[UUID | None] = mapped_column(ForeignKey("uploads.id"), unique=True)
+    source_node_run_id: Mapped[UUID | None]
+    source_port: Mapped[str | None]
     committed_at: Mapped[datetime] = mapped_column(server_default=func.now())

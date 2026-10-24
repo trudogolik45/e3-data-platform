@@ -162,6 +162,21 @@ class Api:
     async def pipeline_version(self, pipeline_id: UUID, version_number: int) -> httpx.Response:
         return await self.client.get(f"/api/v1/pipelines/{pipeline_id}/versions/{version_number}")
 
+    async def start_run(self, body: dict[str, Any], key: str | None) -> httpx.Response:
+        headers = {"Idempotency-Key": key} if key else {}
+        return await self.client.post("/api/v1/pipeline-runs", json=body, headers=headers)
+
+    async def run(self, run_id: str) -> dict[str, Any]:
+        response = await self.client.get(f"/api/v1/pipeline-runs/{run_id}")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    async def run_nodes(self, run_id: str) -> dict[str, dict[str, Any]]:
+        """NodeRun запуска по id узла графа."""
+        response = await self.client.get(f"/api/v1/pipeline-runs/{run_id}/nodes")
+        assert response.status_code == 200, response.text
+        return {node["node_id"]: node for node in response.json()}
+
     async def upload_csv(self, dataset_id: UUID, data: bytes) -> httpx.Response:
         upload = await self.start_upload(dataset_id, data)
         await self.put_file(upload, data)
@@ -176,6 +191,11 @@ def s3(settings: Settings) -> S3Client:
 def object_exists(s3: S3Client, settings: Settings, key: str) -> bool:
     found = s3.list_objects_v2(Bucket=settings.s3_bucket, Prefix=key)
     return any(item.get("Key") == key for item in found.get("Contents", []))
+
+
+def read_object(s3: S3Client, settings: Settings, uri: str) -> bytes:
+    key = uri.removeprefix(f"s3://{settings.s3_bucket}/")
+    return s3.get_object(Bucket=settings.s3_bucket, Key=key)["Body"].read()
 
 
 @pytest.fixture

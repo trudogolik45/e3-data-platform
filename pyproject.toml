@@ -7,6 +7,7 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "aiokafka>=0.14.0",
     "alembic>=1.20.1",
     "asyncpg>=0.32.0",
     "boto3>=1.43.118",
@@ -26,6 +27,7 @@ build-backend = "uv_build"
 dev = [
     "boto3-stubs[s3]>=1.43.118",
     "import-linter>=2.15",
+    "pyarrow>=26.0.0",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
@@ -35,7 +37,7 @@ dev = [
 ]
 
 [project.scripts]
-e3-contracts-schema = "e3.shared.contracts:print_json_schema"
+e3-contracts-schema = "e3.shared.schemas:print_json_schema"
 e3-register-block = "e3.cli.register_block:main"
 
 [tool.ruff]
