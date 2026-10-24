@@ -2,11 +2,13 @@
 
 У каждого сообщения общий envelope; `type` выбирает модель `payload`.
 Ключ сообщения — `node_run_id`: события одного NodeRun идут по порядку.
+`event_id` события попытки выводится из `attempt_id` и `type`: повторно
+отправленное событие получает тот же id, и inbox получателя его отбрасывает.
 """
 
 from datetime import UTC, datetime
 from typing import Annotated, Literal
-from uuid import UUID, uuid4
+from uuid import UUID, uuid4, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
@@ -14,6 +16,8 @@ from e3.shared.contracts import OCI_DIGEST_PATTERN, ExecutionContext, ExecutionR
 
 COMMANDS_TOPIC = "e3.execution.commands.v1"
 EVENTS_TOPIC = "e3.execution.events.v1"
+
+_EVENT_ID_NAMESPACE = UUID("6f1d3c52-8a4e-4c1b-9f0e-3d2a7b5c9e10")
 
 
 class _Envelope(BaseModel):
@@ -77,14 +81,23 @@ ExecutionEvent = Annotated[
 _events = TypeAdapter[ExecutionEvent](ExecutionEvent)
 
 
+def _attempt_event_id(command: SubmitExecution, event: type[_Envelope]) -> UUID:
+    """Одно и то же событие попытки всегда получает один и тот же id."""
+    return uuid5(_EVENT_ID_NAMESPACE, f"{command.attempt_id}/{event.__name__}")
+
+
 def started(command: SubmitExecution) -> ExecutionStarted:
     return ExecutionStarted(
-        node_run_id=command.node_run_id, attempt_id=command.attempt_id, trace_id=command.trace_id
+        event_id=_attempt_event_id(command, ExecutionStarted),
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
     )
 
 
 def succeeded(command: SubmitExecution, result: ExecutionResult) -> ExecutionSucceeded:
     return ExecutionSucceeded(
+        event_id=_attempt_event_id(command, ExecutionSucceeded),
         node_run_id=command.node_run_id,
         attempt_id=command.attempt_id,
         trace_id=command.trace_id,
@@ -94,6 +107,7 @@ def succeeded(command: SubmitExecution, result: ExecutionResult) -> ExecutionSuc
 
 def failed(command: SubmitExecution, error: str) -> ExecutionFailed:
     return ExecutionFailed(
+        event_id=_attempt_event_id(command, ExecutionFailed),
         node_run_id=command.node_run_id,
         attempt_id=command.attempt_id,
         trace_id=command.trace_id,

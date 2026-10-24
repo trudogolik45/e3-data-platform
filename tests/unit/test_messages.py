@@ -4,8 +4,17 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from e3.shared.contracts import ExecutionResult
-from e3.shared.messages import ExecutionFailed, ExecutionSucceeded, Failure, parse_event
+from e3.shared.contracts import ExecutionContext, ExecutionResult
+from e3.shared.messages import (
+    ExecutionFailed,
+    ExecutionSucceeded,
+    Failure,
+    Submission,
+    SubmitExecution,
+    failed,
+    parse_event,
+    started,
+)
 from e3.shared.schemas import json_schemas
 
 
@@ -57,11 +66,45 @@ def test_envelope_follows_prd_shape() -> None:
     assert body["type"] == "ExecutionSucceeded"
 
 
-def test_each_message_gets_own_event_id_and_time() -> None:
+def test_events_of_different_attempts_get_own_event_id_and_time() -> None:
     first, second = succeeded(), succeeded()
 
     assert first.event_id != second.event_id
     assert first.occurred_at <= datetime.now(UTC)
+
+
+def command() -> SubmitExecution:
+    node_run_id, attempt_id = uuid4(), uuid4()
+    return SubmitExecution(
+        node_run_id=node_run_id,
+        attempt_id=attempt_id,
+        trace_id="trace-1",
+        payload=Submission(
+            executable_ref="registry.local/e3/read@sha256:" + "a" * 64,
+            context=ExecutionContext(
+                node_run_id=node_run_id,
+                attempt_id=attempt_id,
+                inputs={},
+                parameters={},
+                output_prefix=f"s3://e3-lake/staging/executions/{attempt_id}",
+            ),
+        ),
+    )
+
+
+def test_resent_event_of_attempt_keeps_event_id_for_inbox() -> None:
+    submitted = command()
+
+    assert started(submitted).event_id == started(submitted).event_id
+    assert failed(submitted, "a").event_id == failed(submitted, "b").event_id
+
+
+def test_events_of_different_types_or_attempts_have_different_ids() -> None:
+    submitted = command()
+
+    assert started(submitted).event_id != failed(submitted, "boom").event_id
+    assert started(submitted).event_id != started(command()).event_id
+    assert started(submitted).event_id != submitted.event_id
 
 
 def test_unknown_event_type_is_rejected() -> None:

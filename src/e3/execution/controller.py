@@ -71,7 +71,10 @@ class ExecutionController:
         return len(applications)
 
     async def _report(self, application: dict[str, Any]) -> None:
-        """Событие уходит до пометки: сбой между ними даёт повтор, его гасит inbox."""
+        """Событие уходит до пометки: сбой между ними даёт повтор.
+
+        Повтор несёт тот же `event_id`, поэтому его гасит inbox Run Orchestrator.
+        """
         metadata = application["metadata"]
         command = parse_command(metadata["annotations"][COMMAND_ANNOTATION].encode())
         state = _application_state(application)
