@@ -2,6 +2,7 @@ import base64
 import hashlib
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 import boto3
@@ -10,6 +11,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from mypy_boto3_s3 import S3Client
+from pydantic import SecretStr
 from testcontainers.community.minio import MinioContainer
 from testcontainers.community.postgres import PostgresContainer
 
@@ -20,6 +22,7 @@ from e3.shared.storage import ObjectStorage
 pytestmark = pytest.mark.integration
 
 BUCKET = "e3-lake"
+PLATFORM_TOKEN = "platform-team-secret"
 
 
 @pytest.fixture(scope="session")
@@ -44,6 +47,7 @@ def base_settings(postgres: PostgresContainer, minio: MinioContainer) -> Setting
         s3_access_key=minio.access_key,
         s3_secret_key=minio.secret_key,
         s3_bucket=BUCKET,
+        platform_token=SecretStr(PLATFORM_TOKEN),
     )
     _migrate(settings.database_url)
     _create_bucket(settings)
@@ -133,6 +137,12 @@ class Api:
         response = await self.client.get(f"/api/v1/datasets/{dataset_id}/versions")
         assert response.status_code == 200, response.text
         return response.json()
+
+    async def register_block(
+        self, spec: dict[str, Any], token: str | None = PLATFORM_TOKEN
+    ) -> httpx.Response:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        return await self.client.post("/api/v1/blocks", json=spec, headers=headers)
 
     async def upload_csv(self, dataset_id: UUID, data: bytes) -> httpx.Response:
         upload = await self.start_upload(dataset_id, data)

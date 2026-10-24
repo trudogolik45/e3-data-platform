@@ -1,6 +1,5 @@
 """Manifest v1 — общая опись данных DatasetVersion и NodeOutput."""
 
-import json
 from typing import Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -40,7 +39,3 @@ class Manifest(BaseModel):
     files: list[ManifestFile] = Field(min_length=1)
     size_bytes: int = Field(ge=0)
     row_count: int | None = Field(default=None, description="None, если строки не считались")
-
-
-def print_json_schema() -> None:
-    print(json.dumps(Manifest.model_json_schema(), ensure_ascii=False, indent=2))

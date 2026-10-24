@@ -1,7 +1,7 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minioadmin"
     s3_region: str = "us-east-1"
     s3_bucket: str = "e3-lake"
+
+    # Токен команды платформы для admin API. Не задан — регистрация блоков закрыта.
+    platform_token: SecretStr | None = None
 
     upload_url_ttl_seconds: int = 3600
     upload_lease_seconds: float = Field(default=300, gt=0)

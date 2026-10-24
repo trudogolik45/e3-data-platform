@@ -6,7 +6,7 @@ from botocore.config import Config
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from e3 import catalog, identity
+from e3 import blocks, catalog, identity
 from e3.settings import Settings
 from e3.shared.storage import ObjectStorage
 
@@ -31,7 +31,10 @@ def create_app(settings: Settings, *, storage: ObjectStorage | None = None) -> F
         upload_lease=timedelta(seconds=settings.upload_lease_seconds),
         upload_url_ttl_seconds=settings.upload_url_ttl_seconds,
     )
+    app.state.blocks = blocks.BlockRegistry(sessions)
+    app.state.platform_token = settings.platform_token
     app.include_router(catalog.router)
+    app.include_router(blocks.router)
     return app
 
 

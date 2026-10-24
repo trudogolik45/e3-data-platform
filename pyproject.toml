@@ -11,7 +11,9 @@ dependencies = [
     "asyncpg>=0.32.0",
     "boto3>=1.43.118",
     "fastapi>=0.162.0",
+    "httpx>=0.28.1",
     "pydantic-settings>=2.16.1",
+    "pyyaml>=6.0.3",
     "sqlalchemy[asyncio]>=2.1.6",
     "uvicorn>=0.54.0",
 ]
@@ -23,17 +25,18 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "boto3-stubs[s3]>=1.43.118",
-    "httpx>=0.28.1",
     "import-linter>=2.15",
     "pyright>=1.1.414",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.17.2",
     "testcontainers[minio,postgres]>=4.15.0",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [project.scripts]
-e3-manifest-schema = "e3.shared.manifest:print_json_schema"
+e3-contracts-schema = "e3.shared.contracts:print_json_schema"
+e3-register-block = "e3.cli.register_block:main"
 
 [tool.ruff]
 line-length = 100
@@ -63,6 +66,7 @@ markers = ["integration: требует Docker (PostgreSQL и MinIO через t
 
 [tool.importlinter]
 root_package = "e3"
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Внутренности identity видны только identity"
@@ -99,3 +103,19 @@ name = "shared не зависит от доменных модулей"
 type = "forbidden"
 source_modules = ["e3.shared"]
 forbidden_modules = ["e3.identity", "e3.catalog", "e3.blocks", "e3.pipelines", "e3.runs", "e3.api"]
+
+[[tool.importlinter.contracts]]
+name = "CLI — тонкий HTTP-клиент: без слоя БД и доменных модулей"
+type = "forbidden"
+source_modules = ["e3.cli"]
+forbidden_modules = [
+    "sqlalchemy",
+    "asyncpg",
+    "alembic",
+    "e3.identity",
+    "e3.catalog",
+    "e3.blocks",
+    "e3.pipelines",
+    "e3.runs",
+    "e3.api",
+]

@@ -236,6 +236,7 @@ class ExecutionResult(BaseModel):
 | `POST` | `/api/v1/datasets/{id}/uploads`                      | Начать загрузку                |
 | `POST` | `/api/v1/datasets/{id}/uploads/{upload_id}/complete` | Завершить и проверить загрузку |
 | `GET`  | `/api/v1/datasets/{id}/versions`                     | Получить версии                |
+| `POST` | `/api/v1/blocks`                                     | Зарегистрировать блок (admin, только команда платформы) |
 | `GET`  | `/api/v1/blocks`                                     | Список доступных блоков        |
 | `POST` | `/api/v1/pipelines`                                  | Создать pipeline               |
 | `PUT`  | `/api/v1/pipelines/{id}/draft`                       | Сохранить PipelineDraft        |
