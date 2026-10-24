@@ -2,6 +2,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from pydantic import SecretStr
 
 from e3.settings import Settings
 from tests.integration.conftest import Api, client_for
@@ -48,10 +49,11 @@ async def test_block_registration_without_platform_token_is_refused(
     assert spec["name"] not in await registered_names(api)
 
 
+@pytest.mark.parametrize("configured", [None, SecretStr("")], ids=["unset", "empty"])
 async def test_block_registration_is_impossible_without_configured_token(
-    settings: Settings,
+    settings: Settings, configured: SecretStr | None
 ) -> None:
-    unconfigured = settings.model_copy(update={"platform_token": None})
+    unconfigured = settings.model_copy(update={"platform_token": configured})
     async with client_for(unconfigured) as client:
         api = Api(client, settings.dev_project_id)
 

@@ -39,6 +39,12 @@ POLL_SECONDS = 1
 NODE_CHAIN = ["PENDING", "QUEUED", "RUNNING", "FINALIZING", "SUCCEEDED"]
 PUBLISH_CHAIN = ["PENDING", "RUNNING", "SUCCEEDED"]
 RUN_CHAIN = ["PENDING", "RUNNING", "SUCCEEDED"]
+# Состояния, которые длятся дольше опроса раз в POLL_SECONDS: QUEUED — пока
+# Spark Operator поднимает driver, RUNNING — пока идёт Spark. Остальные
+# (PENDING, FINALIZING, RUNNING у Publish Dataset) проходят за один цикл
+# Run Orchestrator, и опрос через REST их может не застать.
+READ_LASTING = frozenset({"QUEUED", "RUNNING"})
+RUN_LASTING = frozenset({"RUNNING"})
 
 
 @dataclass
@@ -67,10 +73,14 @@ def _append(states: list[str], state: str) -> None:
         states.append(state)
 
 
-def follows(observed: list[str], chain: list[str]) -> bool:
-    """`observed` идёт по `chain` вперёд, возможно пропуская мимолётные состояния."""
+def follows(observed: list[str], chain: list[str], lasting: frozenset[str] = frozenset()) -> bool:
+    """`observed` идёт по `chain` вперёд и пропускает только мимолётные состояния.
+
+    Каждое состояние из `lasting` должно быть замечено.
+    """
     remaining = iter(chain)
-    return all(state in remaining for state in observed)
+    in_order = all(state in remaining for state in observed)
+    return in_order and lasting <= set(observed)
 
 
 @pytest.fixture(scope="module")
@@ -135,8 +145,8 @@ async def test_read_on_spark_publishes_parquet_dataset_version(finished: Finishe
 async def test_states_follow_same_chains_as_with_fake_controller(finished: FinishedRun) -> None:
     trace = finished.trace
 
-    assert follows(trace.run, RUN_CHAIN) and trace.run[-1] == "SUCCEEDED", trace
-    assert follows(trace.nodes["read"], NODE_CHAIN), trace
+    assert follows(trace.run, RUN_CHAIN, RUN_LASTING) and trace.run[-1] == "SUCCEEDED", trace
+    assert follows(trace.nodes["read"], NODE_CHAIN, READ_LASTING), trace
     assert trace.nodes["read"][-1] == "SUCCEEDED", trace
     assert follows(trace.nodes["publish"], PUBLISH_CHAIN), trace
     assert trace.nodes["publish"][-1] == "SUCCEEDED", trace
