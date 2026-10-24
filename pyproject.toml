@@ -1,0 +1,101 @@
+[project]
+name = "e3"
+version = "0.1.0"
+description = "E3 Data Platform — Control Plane"
+authors = [
+    { name = "trudogolik45", email = "210735425+trudogolik45@users.noreply.github.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "alembic>=1.20.1",
+    "asyncpg>=0.32.0",
+    "boto3>=1.43.118",
+    "fastapi>=0.162.0",
+    "pydantic-settings>=2.16.1",
+    "sqlalchemy[asyncio]>=2.1.6",
+    "uvicorn>=0.54.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.2,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "boto3-stubs[s3]>=1.43.118",
+    "httpx>=0.28.1",
+    "import-linter>=2.15",
+    "pyright>=1.1.414",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+    "ruff>=0.17.2",
+    "testcontainers[minio,postgres]>=4.15.0",
+]
+
+[project.scripts]
+e3-manifest-schema = "e3.shared.manifest:print_json_schema"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+# Тексты на русском: кириллица не опечатка.
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
+
+[tool.pyright]
+include = ["src", "tests", "alembic"]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+markers = ["integration: требует Docker (PostgreSQL и MinIO через testcontainers)"]
+
+[tool.importlinter]
+root_package = "e3"
+
+[[tool.importlinter.contracts]]
+name = "Внутренности identity видны только identity"
+type = "protected"
+protected_modules = ["e3.identity.*"]
+allowed_importers = ["e3.identity"]
+
+[[tool.importlinter.contracts]]
+name = "Внутренности catalog видны только catalog"
+type = "protected"
+protected_modules = ["e3.catalog.*"]
+allowed_importers = ["e3.catalog"]
+
+[[tool.importlinter.contracts]]
+name = "Внутренности blocks видны только blocks"
+type = "protected"
+protected_modules = ["e3.blocks.*"]
+allowed_importers = ["e3.blocks"]
+
+[[tool.importlinter.contracts]]
+name = "Внутренности pipelines видны только pipelines"
+type = "protected"
+protected_modules = ["e3.pipelines.*"]
+allowed_importers = ["e3.pipelines"]
+
+[[tool.importlinter.contracts]]
+name = "Внутренности runs видны только runs"
+type = "protected"
+protected_modules = ["e3.runs.*"]
+allowed_importers = ["e3.runs"]
+
+[[tool.importlinter.contracts]]
+name = "shared не зависит от доменных модулей"
+type = "forbidden"
+source_modules = ["e3.shared"]
+forbidden_modules = ["e3.identity", "e3.catalog", "e3.blocks", "e3.pipelines", "e3.runs", "e3.api"]

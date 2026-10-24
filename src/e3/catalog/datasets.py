@@ -1,0 +1,55 @@
+"""Создание и поиск Dataset внутри Project."""
+
+from dataclasses import dataclass
+from datetime import datetime
+from uuid import UUID, uuid4
+
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from e3.catalog.models import DatasetRow
+
+
+class DatasetNameTaken(Exception):
+    """В Project уже есть Dataset с таким нормализованным именем."""
+
+
+class DatasetNotFound(Exception):
+    """Dataset с таким id нет."""
+
+
+@dataclass(frozen=True)
+class Dataset:
+    dataset_id: UUID
+    project_id: UUID
+    name: str
+    created_at: datetime
+
+
+def normalize_name(name: str) -> str:
+    """Обрезает края, схлопывает внутренние пробелы и приводит к casefold."""
+    return " ".join(name.split()).casefold()
+
+
+async def create_dataset(session: AsyncSession, *, project_id: UUID, name: str) -> Dataset:
+    row = DatasetRow(
+        id=uuid4(), project_id=project_id, name=name, normalized_name=normalize_name(name)
+    )
+    session.add(row)
+    try:
+        await session.flush()
+    except IntegrityError:
+        raise DatasetNameTaken(name) from None
+    await session.refresh(row)
+    return _to_dataset(row)
+
+
+async def get_dataset(session: AsyncSession, dataset_id: UUID) -> Dataset:
+    row = await session.get(DatasetRow, dataset_id)
+    if row is None:
+        raise DatasetNotFound(str(dataset_id))
+    return _to_dataset(row)
+
+
+def _to_dataset(row: DatasetRow) -> Dataset:
+    return Dataset(row.id, row.project_id, row.name, row.created_at)

@@ -308,7 +308,7 @@ Kafka используется только там, где требуется а
   "occurred_at": "2026-10-24T12:00:00Z",
   "type": "ExecutionSucceeded",
   "payload": {
-    "result_manifest": "s3://e3-artifacts/..."
+    "result_manifest": "s3://e3-lake/artifacts/..."
   }
 }
 
@@ -346,7 +346,7 @@ Kafka используется только там, где требуется а
 
 ```
 
-s3://e3/
+s3://e3-lake/
   staging/
     uploads/{upload_id}/
     executions/{attempt_id}/

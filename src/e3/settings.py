@@ -1,0 +1,29 @@
+from typing import Literal
+from uuid import UUID
+
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="E3_", env_file=".env", extra="ignore")
+
+    # Без значения по умолчанию: забытая переменная не должна включать dev-доступ.
+    environment: Literal["dev", "test", "prod"]
+    auth_mode: Literal["dev"] = "dev"
+
+    database_url: str = "postgresql+asyncpg://e3:e3@localhost:5432/e3"
+
+    s3_endpoint_url: str = "http://localhost:9000"
+    s3_public_endpoint_url: str | None = None
+    s3_access_key: str = "minioadmin"
+    s3_secret_key: str = "minioadmin"
+    s3_region: str = "us-east-1"
+    s3_bucket: str = "e3-lake"
+
+    upload_url_ttl_seconds: int = 3600
+    upload_lease_seconds: float = Field(default=300, gt=0)
+
+    dev_organization_id: UUID = UUID("00000000-0000-4000-8000-000000000001")
+    dev_project_id: UUID = UUID("00000000-0000-4000-8000-000000000002")
+    dev_user_id: UUID = UUID("00000000-0000-4000-8000-000000000003")
