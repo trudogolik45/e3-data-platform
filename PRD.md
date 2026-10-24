@@ -130,21 +130,43 @@ SQL exploration · Dashboards
 
 Контракты определяем на Pydantic v2, публикуем как JSON Schema. Это позволит валидировать конфигурацию DAG до запуска.
 
-### `DatasetRef`
+### Ссылки на данные и `ResolvedInput`
 
 ```python
-from pydantic import BaseModel
+from typing import Annotated, Literal
+from pydantic import BaseModel, Field
 from uuid import UUID
 
 
-class DatasetRef(BaseModel):
+class DatasetVersionRef(BaseModel):
+    kind: Literal["dataset_version"] = "dataset_version"
     dataset_id: UUID
     version_id: UUID
+
+
+class NodeOutputRef(BaseModel):
+    kind: Literal["node_output"] = "node_output"
+    node_run_id: UUID
+    port: str
+
+
+DataRef = Annotated[DatasetVersionRef | NodeOutputRef, Field(discriminator="kind")]
+
+
+class ResolvedInput(BaseModel):
+    manifest_uri: str
+    format: Literal["CSV", "PARQUET"]
+    schema: dict
+    source: DataRef
 ```
 
-Здесь нет S3 URL. Это принципиально: DS-блок не должен зависеть от физического расположения датасета.
+Логические ссылки (`DataRef`) в физические `manifest_uri` разрешает только Run Orchestrator, перед `SubmitExecution` и с учётом прав доступа. У Execution Plane нет доступа к PostgreSQL, поэтому в каталог он не ходит.
 
-Перед запуском Runtime разрешает `DatasetRef` в конкретный storage location с учётом прав доступа.
+Блок получает одинаковый `ResolvedInput` для любого источника и не знает, откуда пришли данные. Поле `source` нужно только для логов и lineage. Идентичность `NodeOutput` — пара `(node_run_id, port)`. `attempt_id` в неё не входит: у `NodeRun` не более одного принятого результата.
+
+### `Manifest`
+
+У `NodeOutput` и `DatasetVersion` один формат manifest v1: список файлов, формат, схема, число строк и контрольные суммы. Публикация переносит manifest как есть, ничего не пересчитывая.
 
 ### `BlockSpec`
 
@@ -186,7 +208,7 @@ from pydantic import BaseModel
 class ExecutionContext(BaseModel):
     node_run_id: UUID
     attempt_id: UUID
-    inputs: dict[str, DatasetRef]
+    inputs: dict[str, ResolvedInput]
     parameters: dict[str, Any]
     output_prefix: str
 
@@ -198,7 +220,7 @@ class ExecutionResult(BaseModel):
     metrics: dict[str, float] = {}
 ```
 
-Вход BLOCK-узла — это либо `DatasetVersion` из Input Slot, либо принятый `NodeOutput` upstream-узла. Как в контракте ссылаться на `NodeOutput`, пока открыто: `DatasetRef` описывает только `DatasetVersion`. `outputs` содержит ссылки на подготовленные manifests, а не `DatasetVersion`.
+Вход BLOCK-узла — это либо `DatasetVersion` из Input Slot, либо принятый `NodeOutput` upstream-узла. В обоих случаях он приходит как `ResolvedInput`. `outputs` — это `port → manifest_uri` подготовленных manifests, а не `DatasetVersion`.
 
 Это разделяет три события:
 
