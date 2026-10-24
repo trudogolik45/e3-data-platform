@@ -54,7 +54,7 @@ Distributed transforms
 
 Python Runner
 
-Lightweight jobs
+Lightweight jobs · следующая итерация
 
 DATA PLANE
 
@@ -86,8 +86,8 @@ SQL exploration · Dashboards
 | Identity & Access     | Организации, проекты, роли, политики доступа  | `authorize`, `grant_access`               |
 | Dataset Catalog       | Dataset, версии, схемы, публикация            | `register`, `resolve`, `publish`          |
 | Block Registry        | Спецификации блоков, версии исполняемого кода | `register`, `get_spec`                    |
-| Pipeline Service      | DAG, ревизии, валидация графа                 | `create`, `validate`, `publish`           |
-| Run Orchestrator      | PipelineRun, NodeRun, зависимости, retries    | `start`, `cancel`, `get_status`           |
+| Pipeline Service      | PipelineDraft, PipelineVersion, валидация DAG | `create`, `validate`, `publish`           |
+| Run Orchestrator      | PipelineRun, NodeRun, NodeOutput, retries     | `start`, `cancel`, `get_status`           |
 | Analytics Integration | Связь датасетов с Trino/Superset              | `expose_dataset`, `create_dashboard_link` |
 
 Правило владения: только модуль-владелец может изменять свои доменные сущности. Остальные обращаются к его публичному интерфейсу, даже если все модули работают в одном процессе FastAPI.
@@ -100,18 +100,31 @@ SQL exploration · Dashboards
 
 Ключевые сущности:
 
-| Сущность           | Назначение                                        |
-| ------------------ | ------------------------------------------------- |
-| `Dataset`          | Логическая коллекция данных                       |
-| `DatasetVersion`   | Неизменяемая опубликованная версия данных         |
-| `BlockSpec`        | Версионированный контракт вычислительного блока   |
-| `PipelineVersion`  | Неизменяемая версия DAG                           |
-| `PipelineRun`      | Один запуск конкретной версии DAG                 |
-| `NodeRun`          | Логическое выполнение узла внутри PipelineRun     |
-| `ExecutionAttempt` | Одна физическая попытка запуска                   |
-| `Artifact`         | Результат вычисления, manifest, лог или иной файл |
+| Сущность           | Назначение                                                        |
+| ------------------ | ----------------------------------------------------------------- |
+| `Project`          | Владелец датасетов, пайплайнов и запусков; единица RBAC           |
+| `Dataset`          | Логическая коллекция данных; можно архивировать, нельзя удалить   |
+| `DatasetVersion`   | Неизменяемая версия данных: UUID, `version_number`, схема, формат |
+| `BlockSpec`        | Неизменяемая версия контракта вычислительного блока               |
+| `PipelineDraft`    | Единственная изменяемая заготовка графа                           |
+| `PipelineVersion`  | Неизменяемая версия DAG со слотами входов и выходов               |
+| `PipelineRun`      | Один запуск PipelineVersion с зафиксированными привязками слотов  |
+| `NodeRun`          | Логическое выполнение узла внутри PipelineRun                     |
+| `ExecutionAttempt` | Одна физическая попытка выполнить BLOCK-узел                      |
+| `NodeOutput`       | Принятый логический выход NodeRun (READY)                         |
+| `Artifact`         | Физический объект хранения: файл данных, manifest, лог            |
 
-У каждого `PipelineRun` есть свой ID. У каждого `NodeRun` — свой `execution_id`, сохраняющийся при повторных попытках. У каждой попытки — отдельный `attempt_id`.
+У каждого `PipelineRun` есть свой ID. У каждого `NodeRun` — свой `node_run_id`, сохраняющийся при повторных попытках. У каждой попытки — отдельный `attempt_id`. Имя `node_run_id` единое во всех контрактах E3, включая Kafka.
+
+Правила модели:
+
+- Узлы DAG бывают двух видов: `BLOCK` (ссылается на точную версию `BlockSpec`) и `SYSTEM` (встроен в платформу, без Block Registry и без `ExecutionAttempt`). В MVP единственный системный узел — `Publish Dataset`.
+- **Late Binding**: `PipelineVersion` знает только Input Slots и Output Slots, возможно со значениями по умолчанию. Значение по умолчанию для входа — точная `DatasetVersion` или «последняя версия Dataset».
+- При создании `PipelineRun` все привязки разрешаются в точные значения и больше не меняются, даже если запуск ждёт в очереди.
+- Схема живёт в `DatasetVersion`. Dataset схему не навязывает.
+- Формат `DatasetVersion`: `CSV` (результат Upload) или `PARQUET` (результат публикации).
+- Один `Dataset` может быть и входом, и выходом одного запуска.
+- Архивный Dataset нельзя использовать в новых запусках и публикациях. Уже созданные запуски продолжают работать.
 
 ## 4. Контракты Backend ↔ DS
 
@@ -119,8 +132,14 @@ SQL exploration · Dashboards
 
 ### `DatasetRef`
 
-```
-from pydantic import BaseModelfrom uuid import UUIDclass DatasetRef(BaseModel):    dataset_id: UUID    version_id: UUID
+```python
+from pydantic import BaseModel
+from uuid import UUID
+
+
+class DatasetRef(BaseModel):
+    dataset_id: UUID
+    version_id: UUID
 ```
 
 Здесь нет S3 URL. Это принципиально: DS-блок не должен зависеть от физического расположения датасета.
@@ -129,28 +148,63 @@ from pydantic import BaseModelfrom uuid import UUIDclass DatasetRef(BaseModel): 
 
 ### `BlockSpec`
 
+```python
+from typing import Literal
+from pydantic import BaseModel
+
+
+class PortSpec(BaseModel):
+    name: str
+    data_type: Literal["dataset", "scalar", "artifact"]
+    required: bool = True
+
+
+class BlockSpec(BaseModel):
+    name: str
+    version: str
+    runtime: Literal["spark"]
+    inputs: list[PortSpec]
+    outputs: list[PortSpec]
+    parameters_schema: dict
+    executable_ref: str
 ```
-from typing import Literalfrom pydantic import BaseModelclass PortSpec(BaseModel):    name: str    data_type: Literal["dataset", "scalar", "artifact"]    required: bool = Trueclass BlockSpec(BaseModel):    name: str    version: str    runtime: Literal["spark", "python"]    inputs: list[PortSpec]    outputs: list[PortSpec]    parameters_schema: dict    executable_ref: str
-```
+
+В MVP единственный runtime — Spark; Python Runner — следующая итерация. Блоки регистрирует только команда платформы.
 
 `executable_ref` должен указывать на неизменяемую версию кода, например OCI image digest, а не на плавающий тег `latest`.
 
-Для production добавим ресурсные требования, совместимость схем, ограничения параллелизма и политику обработки ошибок.
+Для production добавим ресурсные требования, совместимость схем, ограничения параллелизма и политику обработки ошибок, включая retry на уровне блока.
 
 ### `ExecutionContext` и `ExecutionResult`
 
+```python
+from typing import Any
+from uuid import UUID
+from pydantic import BaseModel
+
+
+class ExecutionContext(BaseModel):
+    node_run_id: UUID
+    attempt_id: UUID
+    inputs: dict[str, DatasetRef]
+    parameters: dict[str, Any]
+    output_prefix: str
+
+
+class ExecutionResult(BaseModel):
+    node_run_id: UUID
+    attempt_id: UUID
+    outputs: dict[str, str]
+    metrics: dict[str, float] = {}
 ```
-from typing import Anyfrom uuid import UUIDfrom pydantic import BaseModelclass ExecutionContext(BaseModel):    execution_id: UUID    attempt_id: UUID    inputs: dict[str, DatasetRef]    parameters: dict[str, Any]    output_prefix: strclass ExecutionResult(BaseModel):    execution_id: UUID    attempt_id: UUID    outputs: dict[str, str]    metrics: dict[str, float] = {}
-```
 
-`outputs` здесь содержит ссылки на подготовленные manifests, а не автоматически опубликованные `DatasetVersion`.
+Вход BLOCK-узла — это либо `DatasetVersion` из Input Slot, либо принятый `NodeOutput` upstream-узла. Как в контракте ссылаться на `NodeOutput`, пока открыто: `DatasetRef` описывает только `DatasetVersion`. `outputs` содержит ссылки на подготовленные manifests, а не `DatasetVersion`.
 
-Это разделяет два события:
+Это разделяет три события:
 
-1. Вычисление завершилось.
-2. Результат проверен и опубликован в каталоге.
-
-Только после второго события downstream-узлы получают опубликованные входы.
+1. Вычисление попытки завершилось.
+2. Orchestrator проверил manifest и принял `NodeOutput` (READY). Только такой выход потребляют downstream-узлы.
+3. Если выход подключён к `Publish Dataset`, Dataset Catalog публикует его как новую `DatasetVersion`.
 
 ## 5. REST API v1
 
@@ -162,7 +216,8 @@ from typing import Anyfrom uuid import UUIDfrom pydantic import BaseModelclass E
 | `GET`  | `/api/v1/datasets/{id}/versions`                     | Получить версии                |
 | `GET`  | `/api/v1/blocks`                                     | Список доступных блоков        |
 | `POST` | `/api/v1/pipelines`                                  | Создать pipeline               |
-| `POST` | `/api/v1/pipelines/{id}/versions`                    | Опубликовать версию DAG        |
+| `PUT`  | `/api/v1/pipelines/{id}/draft`                       | Сохранить PipelineDraft        |
+| `POST` | `/api/v1/pipelines/{id}/versions`                    | Опубликовать Draft как версию  |
 | `POST` | `/api/v1/pipeline-runs`                              | Запустить DAG                  |
 | `GET`  | `/api/v1/pipeline-runs/{id}`                         | Статус выполнения              |
 | `GET`  | `/api/v1/pipeline-runs/{id}/nodes`                   | Состояния узлов                |
@@ -183,12 +238,29 @@ Idempotency-Key: run-request-001
       "dataset_id": "a91b...",
       "version_id": "f42d..."
     }
+  },
+  "outputs": {
+    "result": {
+      "dataset_id": "c03e..."
+    }
   }
 }
 
 ```
 
-Ответ `202 Accepted` возвращает `pipeline_run_id`, ссылку на ресурс статуса и начальное состояние `PENDING`.
+Слоты, не переданные в запросе, берутся из значений по умолчанию `PipelineVersion`. Слот без значения — ошибка `422`.
+
+Ответ `202 Accepted` возвращает `pipeline_run_id`, ссылку на ресурс статуса, начальное состояние `PENDING` и итоговые точные привязки всех слотов.
+
+При создании запуска синхронно проверяются права: чтение входов и запись в выходы (`403`), а также что датасеты не в архиве. Повторная проверка прав на запись делается перед каждой публикацией.
+
+У проекта не более 5 активных `PipelineRun`. Остальные ждут в `PENDING` в FIFO-очереди.
+
+Загрузка в MVP: один CSV-файл с заголовком на один Upload. Загрузка не запускает вычислений: после `complete` файл проверяется (целостность, схема по заголовку) и становится `DatasetVersion` формата `CSV`.
+
+Физического удаления нет: Dataset и Pipeline только архивируются.
+
+Роли проекта: `Viewer`, `Editor`, `Admin`. ACL на отдельные датасеты — следующая итерация.
 
 Для загрузки файлов API выдаёт presigned S3 URL. Содержимое файла не проходит через FastAPI.
 
@@ -208,7 +280,7 @@ Kafka используется только там, где требуется а
 {
   "event_id": "uuid",
   "schema_version": 1,
-  "execution_id": "uuid",
+  "node_run_id": "uuid",
   "attempt_id": "uuid",
   "trace_id": "trace-context",
   "occurred_at": "2026-10-24T12:00:00Z",
@@ -224,7 +296,9 @@ Kafka используется только там, где требуется а
 
 - Kafka доставляет сообщения как минимум один раз.
 - Повторная команда с тем же `attempt_id` не создаёт второй workload.
-- Orchestrator применяет события только к соответствующей попытке и допустимому переходу состояния.
+- Orchestrator применяет события только к Current Attempt и допустимому переходу состояния. События остальных попыток игнорируются.
+- Retry решает только Orchestrator: 3 ретрая, максимум 4 попытки на NodeRun. Controller сам не перезапускает.
+- У NodeRun не более одной активной попытки. Новая стартует только после того, как старая доказуемо мертва: `SparkApplication` терминален или удалён, нет pod'ов с её `attempt_id`, Kubernetes не может её восстановить. Иначе reconciliation по таймауту помечает попытку `LOST` после проверки этих условий. См. ADR-0003.
 - Transactional outbox исключает разрыв между записью состояния в PostgreSQL и публикацией команды.
 - Inbox/deduplication защищает от повторной обработки.
 - Reconciliation восстанавливает состояние после сбоев и пропущенных событий.
@@ -233,11 +307,16 @@ Kafka используется только там, где требуется а
 
 ## 7. Жизненный цикл вычислений
 
-PipelineRun / NodeRun state machine
+`NodeRun`: `PENDING → QUEUED → RUNNING → FINALIZING → SUCCEEDED`, а также `FAILED`, `CANCELLING → CANCELLED`, `SKIPPED` (не запускался, потому что upstream упал).
 
-Отмена — запрос, а не мгновенный terminal state. При получении `cancel` система переводит операцию в `CANCELLING`, останавливает workload и только после подтверждения фиксирует `CANCELLED`.
+`PipelineRun`: `PENDING → RUNNING → SUCCEEDED | FAILED`, а также `CANCELLING → CANCELLED`. Своего `FINALIZING` у `PipelineRun` нет.
 
-Если Spark успешно завершил вычисление, но публикация результата не состоялась, операция не должна ошибочно переходить в `SUCCEEDED`. Для этого вводим промежуточный этап `FINALIZING`.
+- `FINALIZING` принадлежит `NodeRun`: Spark закончил, Orchestrator проверяет manifest и принимает `NodeOutput`. Состояние `READY` принадлежит `NodeOutput`.
+- `PipelineRun` завершается только тогда, когда все узлы в терминальных состояниях.
+- Fail-fast: когда у узла кончились retry, `PipelineRun` уходит в `FAILED`. Работающие узлы отменяются, остальные становятся `SKIPPED`.
+- Отмена — запрос, а не мгновенный terminal state. При `cancel` операция переходит в `CANCELLING`, workload останавливается, и только после подтверждения фиксируется `CANCELLED`.
+- Начатую публикацию (`Publish Dataset`) отменить нельзя. Она доходит до конца, потом запуск завершается.
+- Уже опубликованные `DatasetVersion` не откатываются при `FAILED` или `CANCELLED` запуска.
 
 ## 8. Data Lake и публикация результатов
 
@@ -255,20 +334,24 @@ s3://e3/
         data/
         manifest.json
   artifacts/
-    {execution_id}/{attempt_id}/
+    {node_run_id}/{attempt_id}/
   system/
     checkpoints/
 
 ```
 
+Публикуются только выходы, подключённые к системному конечному узлу `Publish Dataset`. Публикация идёт сразу, как только upstream-узел готов, не дожидаясь всего DAG (см. ADR-0002). Она всегда направлена в существующий неархивный Dataset того же проекта.
+
 Публикация версии:
 
-1. Runtime пишет данные в `staging`.
-2. Проверяет целостность и формирует manifest.
-3. Dataset Catalog валидирует схему и доступность объектов.
-4. Результат переносится или копируется в неизменяемое расположение либо регистрируется как immutable snapshot.
-5. PostgreSQL-транзакция фиксирует опубликованную версию.
-6. Orchestrator разрешает downstream-узлы.
+1. Runtime пишет данные в `staging/executions/{attempt_id}/`, проверяет целостность и формирует manifest.
+2. Orchestrator принимает `NodeOutput` (READY) от Current Attempt.
+3. Orchestrator запускает `NodeRun` узла `Publish Dataset`. Он выполняется в Control Plane, без Spark и Execution Controller.
+4. Dataset Catalog повторно проверяет права на запись, валидирует схему и доступность объектов.
+5. Результат переносится или копируется в неизменяемое расположение либо регистрируется как immutable snapshot.
+6. PostgreSQL-транзакция фиксирует `DatasetVersion` и выдаёт следующий `version_number` внутри Dataset. Параллельные публикации в один Dataset не конфликтуют, а нумеруются по порядку фиксации.
+
+Неопубликованные данные из `staging` хранятся 7 суток после завершения `PipelineRun`, диагностические Artifact'ы — 30 суток.
 
 Для Iceberg вместо копирования файлов нужно использовать транзакционный commit таблицы через соответствующий catalog. Поэтому Parquet datasets и Iceberg tables должны иметь разные стратегии публикации, хотя могут использовать общий логический интерфейс Dataset Catalog.
 
@@ -298,10 +381,8 @@ Iceberg, Trino, Superset, dataset lineage, продвинутые политик
 
 ML model registry, feature pipelines, vLLM, inference endpoints, AI agents.
 
-## 11. Первое архитектурное решение (ADR-001)
+## 11. Архитектурные решения и acceptance test
 
-Решение: E3 строится как модульный Control Plane на FastAPI с отдельным Execution Plane, Kafka как транспортом команд/событий, PostgreSQL как источником истины и S3 как основным каналом обмена вычислительными данными.
+Решения записаны в `docs/adr/`: 0001 — Control Plane и Execution Plane, 0002 — публикация через `Publish Dataset`, 0003 — одна активная попытка на NodeRun. Термины — в `GLOSSARY.md`.
 
-Причина: такое разделение минимизирует распределённую связанность, даёт единое управление жизненным циклом и позволяет независимо масштабировать вычисления.
-
-Первый acceptance test: загрузить CSV → создать DAG `Read → Filter → Aggregate` → выполнить на Spark → сохранить Parquet → зарегистрировать новую версию датасета → получить статус и результат через API. Повторный запуск и перезапуск сервисов не должны приводить к дублированию опубликованных результатов или потере состояния.
+Первый acceptance test: загрузить CSV → создать DAG `Read → Filter → Aggregate → Publish Dataset` → выполнить на Spark → сохранить Parquet → зарегистрировать новую версию датасета → получить статус и результат через API. Повторный запуск и перезапуск сервисов не должны приводить к дублированию опубликованных результатов или потере состояния.
