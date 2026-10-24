@@ -4,10 +4,9 @@ from uuid import UUID, uuid4
 import pytest
 from mypy_boto3_s3 import S3Client
 
-from e3.api.app import create_storage
 from e3.settings import Settings
 from e3.shared.storage import ObjectStorage, StorageUnavailable
-from tests.integration.conftest import Api, client_for, object_exists
+from tests.integration.conftest import Api, client_for, object_exists, storage_like
 
 pytestmark = pytest.mark.integration
 
@@ -112,13 +111,6 @@ class CopyFailsOnce(ObjectStorage):
             self.failed = True
             raise StorageUnavailable("503 SlowDown")
         await super().copy(source_key, target_key)
-
-
-def storage_like[S: ObjectStorage](cls: type[S], settings: Settings) -> S:
-    real = create_storage(settings)
-    storage = cls.__new__(cls)
-    storage.__dict__.update(real.__dict__)
-    return storage
 
 
 async def test_complete_after_crash_between_manifest_and_commit_finishes_once(

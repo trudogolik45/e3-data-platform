@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from e3.catalog.models import DatasetRow, DatasetVersionRow
+from e3.shared.contracts import NodeOutputRef
 from e3.shared.manifest import DataFormat, DataSchema
 
 
@@ -35,7 +36,8 @@ async def register(
     format: DataFormat,
     data_schema: DataSchema,
     manifest_uri: str,
-    upload_id: UUID | None,
+    upload_id: UUID | None = None,
+    source: NodeOutputRef | None = None,
 ) -> DatasetVersion:
     """Фиксирует DatasetVersion со следующим `version_number` внутри Dataset.
 
@@ -56,6 +58,8 @@ async def register(
         data_schema=data_schema.model_dump(),
         manifest_uri=manifest_uri,
         upload_id=upload_id,
+        source_node_run_id=source.node_run_id if source else None,
+        source_port=source.port if source else None,
     )
     session.add(row)
     await session.flush()
@@ -68,6 +72,16 @@ async def resolve(session: AsyncSession, version_id: UUID) -> DatasetVersion:
     if row is None:
         raise DatasetVersionNotFound(str(version_id))
     return _to_version(row)
+
+
+async def find_published(session: AsyncSession, source: NodeOutputRef) -> DatasetVersion | None:
+    row = await session.scalar(
+        select(DatasetVersionRow).where(
+            DatasetVersionRow.source_node_run_id == source.node_run_id,
+            DatasetVersionRow.source_port == source.port,
+        )
+    )
+    return _to_version(row) if row else None
 
 
 async def list_versions(session: AsyncSession, dataset_id: UUID) -> list[DatasetVersion]:

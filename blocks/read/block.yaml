@@ -1,0 +1,11 @@
+# BlockSpec блока `Read` для `e3-register-block`.
+# `executable_ref` подставляет сборка: digest образа из registry (см. scripts/e2e.sh).
+name: read
+version: "1.0.0"
+runtime: spark
+inputs:
+  - { name: source, data_type: dataset }
+outputs:
+  - { name: data, data_type: dataset }
+parameters_schema: {}
+executable_ref: "@EXECUTABLE_REF@"

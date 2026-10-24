@@ -1,0 +1,19 @@
+name: E2E
+
+# Настоящий Spark на kind долгий: только push в main и ручной запуск, не на PR.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: azure/setup-helm@v4
+      - run: uv sync --locked
+      - name: Read → Publish Dataset на kind
+        run: scripts/e2e.sh

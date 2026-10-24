@@ -1,0 +1,8 @@
+# kind-кластер для E2E: containerd ищет зеркала registry в /etc/containerd/certs.d,
+# туда scripts/e2e.sh кладёт адрес локального registry.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry]
+      config_path = "/etc/containerd/certs.d"

@@ -220,6 +220,8 @@ class ExecutionResult(BaseModel):
     metrics: dict[str, float] = {}
 ```
 
+Блок пишет данные и manifests только под `output_prefix`, а свой `ExecutionResult` — в `{output_prefix}/result.json`. Оттуда его забирает Execution Controller, когда `SparkApplication` завершился, и шлёт в `ExecutionSucceeded`.
+
 Вход BLOCK-узла — это либо `DatasetVersion` из Input Slot, либо принятый `NodeOutput` upstream-узла. В обоих случаях он приходит как `ResolvedInput`. `outputs` — это `port → manifest_uri` подготовленных manifests, а не `DatasetVersion`.
 
 Это разделяет три события:
@@ -236,6 +238,7 @@ class ExecutionResult(BaseModel):
 | `POST` | `/api/v1/datasets/{id}/uploads`                      | Начать загрузку                |
 | `POST` | `/api/v1/datasets/{id}/uploads/{upload_id}/complete` | Завершить и проверить загрузку |
 | `GET`  | `/api/v1/datasets/{id}/versions`                     | Получить версии                |
+| `POST` | `/api/v1/blocks`                                     | Зарегистрировать блок (admin, только команда платформы) |
 | `GET`  | `/api/v1/blocks`                                     | Список доступных блоков        |
 | `POST` | `/api/v1/pipelines`                                  | Создать pipeline               |
 | `PUT`  | `/api/v1/pipelines/{id}/draft`                       | Сохранить PipelineDraft        |
@@ -308,16 +311,22 @@ Kafka используется только там, где требуется а
   "occurred_at": "2026-10-24T12:00:00Z",
   "type": "ExecutionSucceeded",
   "payload": {
-    "result_manifest": "s3://e3-lake/artifacts/..."
+    "node_run_id": "uuid",
+    "attempt_id": "uuid",
+    "outputs": {"data": "s3://e3-lake/staging/executions/{attempt_id}/data/manifest.json"},
+    "metrics": {}
   }
 }
 
 ```
 
+`payload` выбирается по `type`: `SubmitExecution` — `executable_ref` блока и `ExecutionContext`, `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error`. Ключ сообщения — `node_run_id`.
+
 Гарантии:
 
 - Kafka доставляет сообщения как минимум один раз.
 - Повторная команда с тем же `attempt_id` не создаёт второй workload.
+- `event_id` события попытки выводится из `attempt_id` и `type`: повторно отправленное событие несёт тот же `event_id`, и inbox Orchestrator его отбрасывает.
 - Orchestrator применяет события только к Current Attempt и допустимому переходу состояния. События остальных попыток игнорируются.
 - Retry решает только Orchestrator: 3 ретрая, максимум 4 попытки на NodeRun. Controller сам не перезапускает.
 - У NodeRun не более одной активной попытки. Новая стартует только после того, как старая доказуемо мертва: `SparkApplication` терминален или удалён, нет pod'ов с её `attempt_id`, Kubernetes не может её восстановить. Иначе reconciliation по таймауту помечает попытку `LOST` после проверки этих условий. См. ADR-0003.
