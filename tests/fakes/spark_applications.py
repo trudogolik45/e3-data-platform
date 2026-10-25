@@ -50,9 +50,8 @@ class InMemorySparkApplications:
     def set_pods(self, attempt_id: UUID, *pods: Pod) -> None:
         self._pods[attempt_id] = list(pods)
 
-    def delete(self, name: str) -> None:
-        """Ресурс удалили мимо Controller, например `kubectl delete`."""
-        del self.items[name]
+    async def delete(self, name: str) -> None:
+        self.items.pop(name, None)
 
     def vanish_once(self, name: str) -> None:
         """Следующий `get` не видит ресурс: гонка удаления и создания по имени."""

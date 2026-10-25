@@ -18,6 +18,7 @@ from e3.runs.orchestrator import (
     NodeRun,
     PipelineRun,
     PipelineRunNotFound,
+    RunNotCancellable,
     RunOrchestrator,
 )
 from e3.runs.progress import NodeState, RunState
@@ -35,6 +36,8 @@ class PipelineRunOut(BaseModel):
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
     created_at: datetime
+    # Первопричина Fail-fast: первый упавший NodeRun.
+    failed_node_run_id: UUID | None
 
 
 class NodeOutputOut(BaseModel):
@@ -108,6 +111,19 @@ async def get_run(
     return _run_out(await _accessible_run(orchestrator, principal, pipeline_run_id))
 
 
+@router.post("/{pipeline_run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+async def cancel_run(
+    pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
+) -> PipelineRunOut:
+    """Запрос принят, а не Spark остановлен: CANCELLED наступит после доказанной остановки."""
+    await _accessible_run(orchestrator, principal, pipeline_run_id)
+    try:
+        run = await orchestrator.cancel(pipeline_run_id)
+    except RunNotCancellable:
+        raise HTTPException(status.HTTP_409_CONFLICT, "PipelineRun уже завершён") from None
+    return _run_out(run)
+
+
 @router.get("/{pipeline_run_id}/nodes")
 async def list_nodes(
     pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
@@ -140,6 +156,7 @@ def _run_out(run: PipelineRun) -> PipelineRunOut:
         inputs=run.inputs,
         outputs=run.outputs,
         created_at=run.created_at,
+        failed_node_run_id=run.failed_node_run_id,
     )
 
 

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
+    ExecutionCancelled,
     ExecutionFailed,
     ExecutionLost,
     ExecutionSucceeded,
@@ -13,6 +14,8 @@ from e3.shared.messages import (
     ReconcileExecution,
     Submission,
     SubmitExecution,
+    cancel,
+    cancelled,
     failed,
     lost,
     parse_command,
@@ -176,3 +179,24 @@ def test_command_type_selects_model() -> None:
 
     assert parse_command(submitted.to_bytes()) == submitted
     assert isinstance(parse_command(reconcile(submitted, 1).to_bytes()), ReconcileExecution)
+
+
+def test_cancel_carries_original_submission_and_id_distinct_from_reconcile() -> None:
+    submitted = command()
+
+    first = cancel(submitted, 1)
+
+    assert parse_command(first.to_bytes()) == first
+    assert first.payload == submitted.payload
+    assert first.event_id == cancel(submitted, 1).event_id
+    assert first.event_id not in {cancel(submitted, 2).event_id, reconcile(submitted, 1).event_id}
+
+
+def test_cancelled_attempt_is_own_event_with_stable_id() -> None:
+    submitted = command()
+
+    event = parse_event(cancelled(submitted).to_bytes())
+
+    assert isinstance(event, ExecutionCancelled)
+    assert event.event_id == cancelled(submitted).event_id
+    assert event.event_id != lost(submitted).event_id

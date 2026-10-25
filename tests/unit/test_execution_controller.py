@@ -4,7 +4,13 @@ import pytest
 
 from e3.execution.controller import ExecutionController
 from e3.execution.settings import ExecutionSettings
-from e3.execution.workload import COMMAND_ANNOTATION, FENCED_LABEL, Pod, WorkloadConfig
+from e3.execution.workload import (
+    CANCELLED_LABEL,
+    COMMAND_ANNOTATION,
+    FENCED_LABEL,
+    Pod,
+    WorkloadConfig,
+)
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
     ExecutionEvent,
@@ -12,6 +18,7 @@ from e3.shared.messages import (
     ExecutionSucceeded,
     Submission,
     SubmitExecution,
+    cancel,
     parse_command,
     reconcile,
 )
@@ -326,3 +333,45 @@ async def test_existing_real_application_is_never_fenced() -> None:
 
     assert "suspend" not in applications.items[name(submit)]["spec"]
     assert events.sent == []
+
+
+async def test_cancel_of_attempt_not_yet_in_kubernetes_fences_it_and_reports_cancelled() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+
+    await execution.handle(cancel(submit, 1))
+
+    labels = applications.items[name(submit)]["metadata"]["labels"]
+    assert labels[FENCED_LABEL] == "true"
+    assert labels[CANCELLED_LABEL] == "true"
+    assert [event.type for event in events.sent] == ["ExecutionCancelled"]
+
+
+async def test_cancel_of_running_attempt_replaces_it_with_fence_and_waits_for_pods() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "RUNNING")
+    applications.set_pods(submit.attempt_id, Pod(phase="Running"))
+    await execution.report()
+
+    await execution.handle(cancel(submit, 1))
+    assert applications.items[name(submit)]["spec"]["suspend"] is True
+    assert [event.type for event in events.sent] == ["ExecutionStarted"]
+
+    applications.set_pods(submit.attempt_id)
+    await execution.report()
+
+    assert [event.type for event in events.sent] == ["ExecutionStarted", "ExecutionCancelled"]
+
+
+async def test_cancel_of_finished_attempt_reports_its_real_outcome() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+
+    await execution.handle(cancel(submit, 1))
+
+    assert FENCED_LABEL not in applications.items[name(submit)]["metadata"]["labels"]
+    assert [event.type for event in events.sent] == ["ExecutionFailed"]

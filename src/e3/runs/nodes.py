@@ -64,7 +64,8 @@ def progress(row: NodeRunRow) -> NodeProgress:
     upstream = frozenset(
         ref.node_run_id for ref in node_inputs(row).values() if isinstance(ref, NodeOutputRef)
     )
-    return NodeProgress(row.id, NodeState(row.state), upstream)
+    stoppable = row.kind == NodeKind.BLOCK
+    return NodeProgress(row.id, NodeState(row.state), upstream, stoppable=stoppable)
 
 
 def _wire_inputs(

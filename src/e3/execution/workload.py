@@ -3,7 +3,8 @@
 Имя ресурса выводится из `attempt_id`, поэтому повторная `SubmitExecution`
 попадает в уже созданный ресурс и второго workload не будет. Attempt Fence —
 ресурс с тем же именем и `spec.suspend: true`: Spark Operator его не запускает,
-а опоздавшая `SubmitExecution` упирается в занятое имя.
+а опоздавшая `SubmitExecution` упирается в занятое имя. Метка отмены на заборе
+значит, что попытку остановили по `CancelExecution`, а не потеряли.
 """
 
 from dataclasses import dataclass
@@ -11,7 +12,12 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from e3.shared.messages import ReconcileExecution, SubmitExecution, original_submission
+from e3.shared.messages import (
+    CancelExecution,
+    ReconcileExecution,
+    SubmitExecution,
+    original_submission,
+)
 
 GROUP = "sparkoperator.k8s.io"
 VERSION = "v1beta2"
@@ -21,6 +27,7 @@ ATTEMPT_LABEL = "e3.io/attempt-id"
 NODE_RUN_LABEL = "e3.io/node-run-id"
 REPORTED_LABEL = "e3.io/reported"
 FENCED_LABEL = "e3.io/fenced"
+CANCELLED_LABEL = "e3.io/cancelled"
 COMMAND_ANNOTATION = "e3.io/command"
 
 # Точка входа образа блока: получает ExecutionContext JSON-аргументом.
@@ -65,11 +72,19 @@ def is_fence(application: dict[str, Any]) -> bool:
     return application["metadata"]["labels"].get(FENCED_LABEL) == "true"
 
 
-def attempt_fence(command: ReconcileExecution, config: WorkloadConfig) -> dict[str, Any]:
+def is_cancelled(application: dict[str, Any]) -> bool:
+    return application["metadata"]["labels"].get(CANCELLED_LABEL) == "true"
+
+
+def attempt_fence(
+    command: ReconcileExecution | CancelExecution, config: WorkloadConfig
+) -> dict[str, Any]:
     """Занимает имя попытки ресурсом, который Spark Operator не запускает."""
     fence = spark_application(original_submission(command), config)
     fence["metadata"]["labels"][FENCED_LABEL] = "true"
     fence["spec"]["suspend"] = True
+    if isinstance(command, CancelExecution):
+        fence["metadata"]["labels"][CANCELLED_LABEL] = "true"
     return fence
 
 

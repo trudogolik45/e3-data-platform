@@ -17,6 +17,7 @@ from e3.shared.contracts import (
 )
 from e3.shared.manifest import Manifest
 from e3.shared.messages import (
+    CancelExecution,
     ExecutionCommand,
     ExecutionEvent,
     ReconcileExecution,
@@ -35,6 +36,7 @@ CONTRACTS: dict[str, Any] = {
     "Manifest": Manifest,
     "SubmitExecution": SubmitExecution,
     "ReconcileExecution": ReconcileExecution,
+    "CancelExecution": CancelExecution,
     "ExecutionCommand": ExecutionCommand,
     "ExecutionEvent": ExecutionEvent,
 }

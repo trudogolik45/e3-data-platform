@@ -277,6 +277,10 @@ Idempotency-Key: run-request-001
 
 Ответ `202 Accepted` возвращает `pipeline_run_id`, ссылку на ресурс статуса, начальное состояние `PENDING` и итоговые точные привязки всех слотов.
 
+`PipelineRun` в ответах несёт `failed_node_run_id` — первый упавший узел, первопричину Fail-fast (иначе `null`).
+
+Отмена `POST /api/v1/pipeline-runs/{id}/cancel` отвечает `202 Accepted` с текущим `PipelineRun`: запрос принят, а не Spark остановлен. `PENDING` и `RUNNING` переходят в `CANCELLING` (`PENDING` без стартовавших узлов — сразу в `CANCELLED`); `CANCELLING`, `CANCELLED` и запуск с идущим Fail-fast не меняются. Завершённый `SUCCEEDED` или `FAILED` — `409 Conflict`.
+
 При создании запуска синхронно проверяются права: чтение входов и запись в выходы (`403`), а также что датасеты не в архиве. Повторная проверка прав на запись делается перед каждой публикацией.
 
 У проекта не более 5 активных `PipelineRun`. Остальные ждут в `PENDING` в FIFO-очереди.
@@ -320,7 +324,7 @@ Kafka используется только там, где требуется а
 
 ```
 
-`payload` выбирается по `type`: `SubmitExecution` и `ReconcileExecution` — `executable_ref` блока и `ExecutionContext` (у проверки — исходные, как у попытки), `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error` и `reason`, `ExecutionLost` — пустой. Ключ сообщения — `node_run_id`.
+`payload` выбирается по `type`: `SubmitExecution`, `ReconcileExecution` и `CancelExecution` — `executable_ref` блока и `ExecutionContext` (у проверки и отмены — исходные, как у попытки), `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error` и `reason`, `ExecutionLost` и `ExecutionCancelled` — пустой. Ключ сообщения — `node_run_id`.
 
 `reason` в `ExecutionFailed` Controller выводит из терминального состояния Kubernetes: `SPARK_FAILED`, `SUBMISSION_FAILED`, `NO_RESULT` (блок завершился без `ExecutionResult`) или `UNKNOWN` (по умолчанию, только у сообщений старого формата). У попытки причин больше: `LOST` (событие `ExecutionLost`) и `OUTPUT_REJECTED` (manifest отвергнут в `FINALIZING`, ставит сам Orchestrator). Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST`, остальные сразу переводят NodeRun в `FAILED`.
 
@@ -328,12 +332,13 @@ Kafka используется только там, где требуется а
 
 - Kafka доставляет сообщения как минимум один раз.
 - Повторная команда с тем же `attempt_id` не создаёт второй workload.
-- `event_id` события попытки выводится из `attempt_id` и `type`: повторно отправленное событие несёт тот же `event_id`, и inbox Orchestrator его отбрасывает. `event_id` проверки `ReconcileExecution` — из `attempt_id` и её номера.
+- `event_id` события попытки выводится из `attempt_id` и `type`: повторно отправленное событие несёт тот же `event_id`, и inbox Orchestrator его отбрасывает. `event_id` проверки `ReconcileExecution` и отмены `CancelExecution` — из `attempt_id` и номера (счётчик у них общий).
 - Orchestrator применяет события только к Current Attempt и допустимому переходу состояния. События остальных попыток игнорируются.
 - Retry решает только Orchestrator: 3 ретрая, максимум 4 попытки на NodeRun. Controller сам не перезапускает.
-- У NodeRun не более одной активной попытки. Новая стартует только после того, как старая доказуемо мертва: `SparkApplication` терминален или удалён, нет pod'ов с её `attempt_id`, Kubernetes не может её восстановить. Итог попытки (`Succeeded`, `Failed`, `Lost`) Controller шлёт только после этой проверки. См. ADR-0003.
+- У NodeRun не более одной активной попытки. Новая стартует только после того, как старая доказуемо мертва: `SparkApplication` терминален или удалён, нет pod'ов с её `attempt_id`, Kubernetes не может её восстановить. Итог попытки (`Succeeded`, `Failed`, `Lost`, `Cancelled`) Controller шлёт только после этой проверки. См. ADR-0003.
 - Первый принятый итог попытки окончателен: следующие события той же попытки ничего не меняют.
 - Попытку, о которой нет событий дольше `E3_RECONCILE_AFTER_SECONDS` (600 с), Orchestrator проверяет командой `ReconcileExecution` и повторяет её по тому же таймауту, пока попытка не терминальна; неотправленных проверок на попытку не больше одной. Controller заново шлёт итог терминальной попытки, а пропавший `SparkApplication` заменяет Attempt Fence и шлёт `ExecutionLost`, только когда pod'ов попытки не осталось. Ответа «жива» нет: молчание — не смерть.
+- `CancelExecution` получают попытки узлов, которые останавливает отмена или Fail-fast. Controller удаляет живой `SparkApplication` и ставит на его имя Attempt Fence с меткой `e3.io/cancelled=true`; терминальный `SparkApplication` не трогает и шлёт его обычный итог. `ExecutionCancelled` уходит, только когда pod'ов попытки не осталось. Пока узел в `CANCELLING`, Orchestrator по таймауту `E3_RECONCILE_AFTER_SECONDS` повторяет `CancelExecution` вместо `ReconcileExecution`. Отменяемая попытка не ретраится; `ExecutionLost` по ней тоже значит `CANCELLED`.
 - Attempt Fence — `SparkApplication` с именем попытки и `spec.suspend: true`: Spark Operator его не запускает, а опоздавшая `SubmitExecution` упирается в занятое имя.
 - Transactional outbox исключает разрыв между записью состояния в PostgreSQL и публикацией команды.
 - Inbox/deduplication защищает от повторной обработки.

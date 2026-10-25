@@ -15,6 +15,8 @@ class AttemptState(StrEnum):
     SUCCEEDED = "SUCCEEDED"
     FAILED = "FAILED"
     LOST = "LOST"
+    # Остановлена по отмене или Fail-fast; не ретраится.
+    CANCELLED = "CANCELLED"
 
 
 class AttemptReason(StrEnum):

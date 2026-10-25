@@ -71,6 +71,14 @@ def read_graph(block: str) -> Graph:
     }
 
 
+def read_beside_side_graph(read: str, side: str) -> Graph:
+    """`source → Read → Publish Dataset(result)` и рядом независимый `source → Side`."""
+    graph = read_graph(read)
+    graph["nodes"].append(block_node("side", side))
+    graph["edges"].append(edge(slot("source"), at("side", "source")))
+    return graph
+
+
 def read_filter_aggregate_graph(read: str, filter_block: str, aggregate: str) -> Graph:
     """`source → Read → Filter → Aggregate → Publish Dataset(result)`."""
     return {

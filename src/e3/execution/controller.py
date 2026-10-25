@@ -1,6 +1,6 @@
 """Execution Controller: команды → SparkApplication, его состояния → события попытки.
 
-Итог попытки (`Succeeded`, `Failed`, `Lost`) уходит, только когда она доказуемо
+Итог попытки (`Succeeded`, `Failed`, `Lost`, `Cancelled`) уходит, только когда она доказуемо
 мертва (ADR-0003): `SparkApplication` терминален или заменён Attempt Fence, и у
 попытки не осталось pod'ов, которые ещё работают или могут заработать. Сам
 Controller ничего не перезапускает: ретраи решает Run Orchestrator.
@@ -17,17 +17,20 @@ from e3.execution.workload import (
     Reported,
     WorkloadConfig,
     attempt_fence,
+    is_cancelled,
     is_fence,
     spark_application,
     workload_name,
 )
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
+    CancelExecution,
     Command,
     ExecutionEvent,
     FailureReason,
     ReconcileExecution,
     SubmitExecution,
+    cancelled,
     failed,
     lost,
     parse_command,
@@ -63,6 +66,10 @@ class SparkApplications(Protocol):
 
     async def mark_reported(self, name: str, reported: Reported) -> None: ...
 
+    async def delete(self, name: str) -> None:
+        """Удаляет ресурс; уже удалённый — no-op."""
+        ...
+
     async def pods(self, attempt_id: UUID) -> list[Pod]:
         """Pod'ы driver и executor с меткой попытки."""
         ...
@@ -97,6 +104,8 @@ class ExecutionController:
                 await self.submit(command)
             case ReconcileExecution():
                 await self.reconcile(command)
+            case CancelExecution():
+                await self.cancel(command)
 
     async def submit(self, command: SubmitExecution) -> None:
         if await self._applications.create(spark_application(command, self._config)):
@@ -113,6 +122,24 @@ class ExecutionController:
         """
         name = workload_name(command.attempt_id)
         application = await self._applications.get(name)
+        if application is None:
+            await self._applications.create(attempt_fence(command, self._config))
+            application = await self._applications.get(name)
+        if application is not None:
+            await self._settle(application)
+
+    async def cancel(self, command: CancelExecution) -> None:
+        """Ставит на имя попытки Attempt Fence с меткой отмены и шлёт итог, когда она мертва.
+
+        Живое задание удаляется; если опоздавшая SubmitExecution успеет снова занять имя,
+        следующая CancelExecution удалит его ещё раз. Терминальное задание не трогаем:
+        его итог уже доказуем.
+        """
+        name = workload_name(command.attempt_id)
+        application = await self._applications.get(name)
+        if application is not None and _live(application):
+            await self._applications.delete(name)
+            application = None
         if application is None:
             await self._applications.create(attempt_fence(command, self._config))
             application = await self._applications.get(name)
@@ -152,7 +179,9 @@ class ExecutionController:
         """Итог мёртвой попытки; жива или смерть не доказана — None."""
         command = _command(application)
         if is_fence(application):
-            return lost(command) if await self._dead(command.attempt_id) else None
+            if not await self._dead(command.attempt_id):
+                return None
+            return cancelled(command) if is_cancelled(application) else lost(command)
         state = _state(application)
         if state.get("state") not in TERMINAL_STATES or not await self._dead(command.attempt_id):
             return None
@@ -175,6 +204,10 @@ def _command(application: dict[str, Any]) -> SubmitExecution:
     if not isinstance(command, SubmitExecution):
         raise ValueError(f"в {COMMAND_ANNOTATION} не SubmitExecution: {command.type}")
     return command
+
+
+def _live(application: dict[str, Any]) -> bool:
+    return not is_fence(application) and _state(application).get("state") not in TERMINAL_STATES
 
 
 def _state(application: dict[str, Any]) -> dict[str, Any]:

@@ -5,12 +5,9 @@
 """
 
 from collections.abc import Callable
-from datetime import timedelta
 from uuid import UUID, uuid4
 
 import pytest
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
 
 from e3.execution.workload import Pod
 from e3.shared.contracts import ExecutionResult
@@ -25,7 +22,7 @@ from e3.shared.messages import (
     reconcile,
     succeeded,
 )
-from tests.integration.conftest import Plant, drain
+from tests.integration.conftest import Plant, age, drain, past_timeout
 
 pytestmark = pytest.mark.integration
 
@@ -184,30 +181,6 @@ def bypassing_inbox(event: ExecutionSucceeded, payload: ExecutionResult) -> Exec
     return event.model_copy(update={"event_id": uuid4(), "payload": payload})
 
 
-async def age(plant: Plant, attempt_id: UUID, by: timedelta) -> None:
-    """Сдвигает часы попытки назад, будто с её последней новости прошло `by`."""
-    engine = create_async_engine(plant.settings.database_url)
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(
-                text(
-                    "UPDATE runs.execution_attempts"
-                    " SET created_at = created_at - CAST(:by AS interval),"
-                    " started_at = started_at - CAST(:by AS interval),"
-                    " reconcile_requested_at = reconcile_requested_at - CAST(:by AS interval)"
-                    " WHERE attempt_id = :attempt_id"
-                ),
-                {"by": by, "attempt_id": attempt_id},
-            )
-    finally:
-        await engine.dispose()
-
-
-def past_timeout(plant: Plant) -> timedelta:
-    """Чуть больше таймаута reconciliation стенда."""
-    return timedelta(seconds=plant.settings.reconcile_after_seconds + 1)
-
-
 async def reconciles(plant: Plant, attempt_id: UUID) -> list[ReconcileExecution]:
     await drain(plant.relay.publish_pending)
     return [
@@ -243,7 +216,7 @@ async def test_unprocessed_check_is_replaced_and_vanished_attempt_is_retried(
     first = await plant.submitted(run_id)
     controller = plant.fake.controller()
     await controller.handle(first)
-    plant.fake.cluster.delete(f"e3-{first.attempt_id}")
+    await plant.fake.cluster.delete(f"e3-{first.attempt_id}")
     await age(plant, first.attempt_id, past_timeout(plant))
     await plant.orchestrator.reconcile_pending()
     [unprocessed] = await reconciles(plant, first.attempt_id)
