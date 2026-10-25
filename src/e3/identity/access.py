@@ -12,10 +12,10 @@ class Role(StrEnum):
 
     def includes(self, minimum: "Role") -> bool:
         """Каждая следующая Role включает предыдущую."""
-        return LADDER.index(self) >= LADDER.index(minimum)
+        return _LADDER.index(self) >= _LADDER.index(minimum)
 
 
-LADDER = (Role.VIEWER, Role.EDITOR, Role.ADMIN)
+_LADDER = (Role.VIEWER, Role.EDITOR, Role.ADMIN)
 
 
 class ProjectAccessDenied(Exception):

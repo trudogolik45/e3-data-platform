@@ -61,7 +61,11 @@ class IdentityService:
         self._sessions = sessions
 
     async def sign_in(self, identity: Identity) -> UUID:
-        """User по `iss` + `sub`: создаётся при первом входе, email обновляется при каждом."""
+        """User по `iss` + `sub`: создаётся при первом входе, email обновляется при каждом.
+
+        Неподтверждённый email не хранится: им нельзя ни искать, ни показывать.
+        """
+        email = identity.email if identity.email_verified else None
         async with self._sessions.begin() as session:
             user_id = await session.scalar(
                 insert(UserRow)
@@ -69,12 +73,12 @@ class IdentityService:
                     id=uuid4(),
                     issuer=identity.issuer,
                     subject=identity.subject,
-                    email=identity.email,
+                    email=email,
                     email_verified=identity.email_verified,
                 )
                 .on_conflict_do_update(
                     index_elements=["issuer", "subject"],
-                    set_={"email": identity.email, "email_verified": identity.email_verified},
+                    set_={"email": email, "email_verified": identity.email_verified},
                 )
                 .returning(UserRow.id)
             )
@@ -93,6 +97,18 @@ class IdentityService:
         async with self._sessions() as session:
             row = await session.get(MembershipRow, (project_id, user_id))
             return Role(row.role) if row else None
+
+    async def has_role(self, user_id: UUID, project_id: UUID, minimum: Role) -> bool:
+        role = await self.role_of(user_id, project_id)
+        return role is not None and role.includes(minimum)
+
+    async def member(self, project_id: UUID, user_id: UUID) -> Member:
+        async with self._sessions() as session:
+            row = await session.get(MembershipRow, (project_id, user_id))
+            if row is None:
+                raise MemberNotFound(str(user_id))
+            user = await session.get_one(UserRow, user_id)
+            return Member(user_id, user.email, Role(row.role))
 
     async def find_user(self, *, user_id: UUID | None = None, email: str | None = None) -> UUID:
         async with self._sessions() as session:

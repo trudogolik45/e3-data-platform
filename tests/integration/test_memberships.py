@@ -169,3 +169,14 @@ async def test_user_is_found_by_id(identity: IdentityService) -> None:
     assert await identity.find_user(user_id=user) == user
     with pytest.raises(UserNotFound):
         await identity.find_user(user_id=uuid4())
+
+
+async def test_unverified_email_is_not_kept(identity: IdentityService) -> None:
+    admin = await signed_in(identity)
+    project = await new_project(identity, admin)
+    stranger = await signed_in(identity, email=f"{uuid4().hex}@e3.test", verified=False)
+    await identity.add_member(project, stranger, Role.VIEWER)
+
+    member = await identity.member(project, stranger)
+
+    assert member.email is None

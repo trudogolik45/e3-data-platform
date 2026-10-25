@@ -89,10 +89,9 @@ AWAITING_OUTCOME = frozenset({NodeState.QUEUED, NodeState.RUNNING})
 # NodeRun, у которого Current Attempt ещё может прислать итог.
 OPEN_ATTEMPT = AWAITING_OUTCOME | {NodeState.CANCELLING}
 # Запуск закончился: отменять нечего.
+FINISHED = frozenset({RunState.SUCCEEDED, RunState.FAILED})
 # Терминальная причина Publish Dataset без ретрая: дальше Fail-fast.
 ACCESS_REVOKED = "access_revoked: у Initiator нет Role Editor в Project целевого Dataset"
-
-FINISHED = frozenset({RunState.SUCCEEDED, RunState.FAILED})
 
 
 class PipelineRunNotFound(Exception):
@@ -572,8 +571,7 @@ class RunOrchestrator:
             dataset = await self._datasets.get_dataset(publication.dataset_id)
         except catalog.DatasetNotFound:
             return True  # отказ с причиной даст сама публикация
-        role = await self._identity.role_of(publication.initiator, dataset.project_id)
-        return role is not None and role.includes(Role.EDITOR)
+        return await self._identity.has_role(publication.initiator, dataset.project_id, Role.EDITOR)
 
     async def _publication(self, node_run_id: UUID) -> "_Publication | None":
         """Что публикует узел Publish Dataset; `None` — входа NodeOutput нет."""

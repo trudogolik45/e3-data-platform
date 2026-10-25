@@ -55,6 +55,6 @@ class FakeOidcProvider:
             **claims,
         }
         payload = {name: value for name, value in payload.items() if value is not None}
-        return jwt.encode(
-            payload, self._key, algorithm="RS256", headers={"kid": self.kid, **(headers or {})}
-        )
+        header = {"kid": self.kid, **(headers or {})}
+        header = {name: value for name, value in header.items() if value is not None}
+        return jwt.encode(payload, self._key, algorithm="RS256", headers=header)

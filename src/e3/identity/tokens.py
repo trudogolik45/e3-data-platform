@@ -15,6 +15,8 @@ ASYMMETRIC_PREFIXES = ("RS", "PS", "ES", "EdDSA")
 # Неизвестный `kid` перезапрашивает JWKS не чаще раза в это время: иначе мусорные
 # токены превращаются в поток запросов к провайдеру.
 JWKS_REFRESH_SECONDS = 30.0
+# Даже без новых `kid` ключи перечитываются: отозванный провайдером ключ не живёт вечно.
+JWKS_MAX_AGE_SECONDS = 3600.0
 
 
 class InvalidToken(Exception):
@@ -43,6 +45,7 @@ class TokenVerifier:
         algorithms: Sequence[str],
         http: httpx.AsyncClient,
         refresh_seconds: float = JWKS_REFRESH_SECONDS,
+        max_age_seconds: float = JWKS_MAX_AGE_SECONDS,
     ) -> None:
         for algorithm in algorithms:
             if not algorithm.startswith(ASYMMETRIC_PREFIXES):
@@ -53,7 +56,8 @@ class TokenVerifier:
         self._algorithms = list(algorithms)
         self._http = http
         self._refresh_seconds = refresh_seconds
-        self._keys: dict[str, jwt.PyJWK] = {}
+        self._max_age_seconds = max_age_seconds
+        self._keys: list[jwt.PyJWK] = []
         self._fetched_at: float | None = None
 
     async def verify(self, token: str) -> Identity:
@@ -80,18 +84,27 @@ class TokenVerifier:
         if header.get("alg") not in self._algorithms:
             raise InvalidToken(f"алгоритм {header.get('alg')} вне allow-list")
         kid = header.get("kid")
-        if not isinstance(kid, str):
-            raise InvalidToken("в заголовке нет kid")
-        if kid not in self._keys and self._may_refresh():
+        if kid is not None and not isinstance(kid, str):
+            raise InvalidToken("kid не строка")
+        if self._age() >= self._max_age_seconds or (
+            self._find(kid) is None and self._age() >= self._refresh_seconds
+        ):
             await self._refresh()
-        if kid not in self._keys:
-            raise InvalidToken(f"неизвестный kid {kid}")
-        return self._keys[kid]
+        key = self._find(kid)
+        if key is None:
+            raise InvalidToken(f"нет ключа для kid {kid}")
+        return key
 
-    def _may_refresh(self) -> bool:
+    def _find(self, kid: str | None) -> jwt.PyJWK | None:
+        """Без `kid` подходит только единственный ключ провайдера."""
+        if kid is None:
+            return self._keys[0] if len(self._keys) == 1 else None
+        return next((key for key in self._keys if key.key_id == kid), None)
+
+    def _age(self) -> float:
         if self._fetched_at is None:
-            return True
-        return time.monotonic() - self._fetched_at >= self._refresh_seconds
+            return float("inf")
+        return time.monotonic() - self._fetched_at
 
     async def _refresh(self) -> None:
         try:
@@ -100,7 +113,7 @@ class TokenVerifier:
             jwks = jwt.PyJWKSet.from_dict(response.json())
         except (httpx.HTTPError, ValueError, jwt.PyJWTError) as error:
             raise JwksUnavailable(str(error)) from error
-        self._keys = {key.key_id: key for key in jwks.keys if key.key_id}
+        self._keys = list(jwks.keys)
         self._fetched_at = time.monotonic()
 
 

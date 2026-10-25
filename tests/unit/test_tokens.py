@@ -143,3 +143,27 @@ async def test_unreachable_jwks_is_not_an_invalid_token(provider: FakeOidcProvid
 def test_symmetric_and_none_algorithms_cannot_be_allowed(algorithm: str) -> None:
     with pytest.raises(ValueError, match="алгоритм"):
         verifier_for(FakeOidcProvider(), algorithms=(algorithm,))
+
+
+async def test_jwks_older_than_max_age_is_refetched(provider: FakeOidcProvider) -> None:
+    verifier = TokenVerifier(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        jwks_url=JWKS_URL,
+        algorithms=("RS256",),
+        http=provider.http(),
+        max_age_seconds=0,
+    )
+    await verifier.verify(provider.token("alice"))
+
+    await verifier.verify(provider.token("alice"))
+
+    assert provider.jwks_requests == 2
+
+
+async def test_token_without_kid_uses_the_only_key(provider: FakeOidcProvider) -> None:
+    token = provider.token("alice", headers={"kid": None})
+
+    identity = await verifier_for(provider).verify(token)
+
+    assert identity.subject == "alice"

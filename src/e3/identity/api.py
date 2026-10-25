@@ -190,7 +190,7 @@ async def _find_user(identity: IdentityService, ref: UserRef) -> UUID:
 
 
 async def _member_out(identity: IdentityService, project_id: UUID, user_id: UUID) -> MemberOut:
-    member = next(m for m in await identity.members(project_id) if m.user_id == user_id)
+    member = await identity.member(project_id, user_id)
     return MemberOut(user_id=member.user_id, email=member.email, role=member.role)
 
 
