@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     kafka_group_id: str = "e3-run-orchestrator"
     # Пауза фоновых шагов Run Orchestrator, когда работы нет.
     runs_idle_seconds: float = Field(default=0.5, gt=0)
+    # Сколько попытка может молчать, прежде чем Run Orchestrator спросит о ней Controller.
+    reconcile_after_seconds: int = Field(default=600, gt=0)
 
     # Токен команды платформы для admin API. Не задан — регистрация блоков закрыта.
     platform_token: SecretStr | None = None

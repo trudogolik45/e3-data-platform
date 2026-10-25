@@ -8,114 +8,28 @@ Aggregate → Publish Dataset`.
 """
 
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
-import httpx
 import pytest
-from mypy_boto3_s3 import S3Client
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from e3.api.app import create_app
-from e3.runs import EventConsumer, OutboxRelay, RunOrchestrator, event_consumer, kafka_publisher
+from e3.runs import RunOrchestrator
 from e3.runs.models import InboxRow, OutboxRow
-from e3.settings import Settings
 from e3.shared.contracts import DatasetVersionRef, NodeOutputRef
-from e3.shared.messages import SubmitExecution, failed, started, succeeded
+from e3.shared.messages import failed, started, succeeded
 from e3.shared.storage import ObjectStorage, StorageUnavailable
-from tests.fakes.execution_controller import FakeExecutionController
 from tests.integration.conftest import (
-    Api,
-    PipelineMaker,
+    Plant,
+    drain,
     new_read_filter_aggregate_pipeline,
-    new_read_pipeline,
     read_object,
-    run_request,
     storage_like,
 )
 
 pytestmark = pytest.mark.integration
-
-
-@dataclass
-class Plant:
-    api: Api
-    orchestrator: RunOrchestrator
-    relay: OutboxRelay
-    events: EventConsumer
-    fake: FakeExecutionController
-    s3: S3Client
-    settings: Settings
-
-    async def start(self, pipeline: PipelineMaker = new_read_pipeline) -> str:
-        request = await run_request(self.api, pipeline)
-        response = await self.api.start_run(request, key=str(uuid4()))
-        assert response.status_code == 202, response.text
-        return response.json()["pipeline_run_id"]
-
-    async def node(self, run_id: str, node_id: str) -> dict[str, Any]:
-        return (await self.api.run_nodes(run_id))[node_id]
-
-    async def state(self, run_id: str, node_id: str) -> str:
-        return (await self.node(run_id, node_id))["state"]
-
-    async def submitted(self, run_id: str, node_id: str = "read") -> SubmitExecution:
-        """Запускает узлы, отправляет outbox и ждёт команду для `node_id` этого запуска."""
-        await drain(self.orchestrator.dispatch_pending)
-        await drain(self.relay.publish_pending)
-        node_run_id = UUID((await self.node(run_id, node_id))["node_run_id"])
-        while True:
-            command = await self.fake.next_command()
-            if command.node_run_id == node_run_id:
-                return command
-
-    async def execute(self, run_id: str, node_id: str) -> SubmitExecution:
-        """Проводит BLOCK-узел через Execution Plane и принимает его NodeOutput."""
-        command = await self.submitted(run_id, node_id)
-        await self.fake.succeed(command)
-        await self.consume_until(run_id, node_id, "FINALIZING")
-        await self.orchestrator.finalize_pending()
-        assert await self.state(run_id, node_id) == "SUCCEEDED"
-        return command
-
-    async def consume_until(self, run_id: str, node_id: str, state: str) -> None:
-        for _ in range(EVENT_POLLS):
-            if await self.state(run_id, node_id) == state:
-                return
-            await self.events.poll(timeout_ms=200)
-        assert await self.state(run_id, node_id) == state
-
-    async def finish(self) -> None:
-        """Доводит запуск после принятого события: FINALIZING и публикация."""
-        await self.orchestrator.finalize_pending()
-        await self.orchestrator.publish_pending()
-
-
-EVENT_POLLS = 50
-
-
-async def drain(step: Callable[[], Awaitable[int]]) -> None:
-    while await step():
-        pass
-
-
-@pytest.fixture
-async def plant(kafka: str, settings: Settings, s3: S3Client) -> AsyncIterator[Plant]:
-    app = create_app(settings)
-    orchestrator: RunOrchestrator = app.state.runs
-    transport = httpx.ASGITransport(app=app)
-    async with (
-        httpx.AsyncClient(transport=transport, base_url="http://e3") as client,
-        kafka_publisher(kafka) as publisher,
-        event_consumer(kafka, f"test-{uuid4()}", orchestrator) as events,
-        FakeExecutionController(kafka, s3, settings.s3_bucket) as fake,
-    ):
-        relay = orchestrator.outbox_relay(publisher)
-        api = Api(client, settings.dev_project_id)
-        yield Plant(api, orchestrator, relay, events, fake, s3, settings)
 
 
 async def test_read_and_publish_pass_through_every_state(plant: Plant) -> None:
@@ -250,13 +164,13 @@ async def test_inbox_drops_event_already_received_even_if_state_accepts_it(
     await plant.consume_until(run_id, "read", "RUNNING")
 
     await plant.fake.send(
-        failed(command, "повтор").model_copy(update={"event_id": received.event_id})
+        failed(command, "повтор", "SPARK_FAILED").model_copy(update={"event_id": received.event_id})
     )
     await plant.events.poll(timeout_ms=1000)
 
     assert await plant.state(run_id, "read") == "RUNNING"
     assert await inbox_has(plant, received.event_id)
-    await plant.fake.fail(command, "executor lost")
+    await plant.fake.fail(command, "нет результата", "NO_RESULT")
     await plant.consume_until(run_id, "read", "FAILED")
 
 
@@ -276,14 +190,14 @@ async def test_failed_execution_fails_run_without_publication(plant: Plant) -> N
     run_id = await plant.start()
     command = await plant.submitted(run_id)
 
-    await plant.fake.fail(command, "executor lost")
+    await plant.fake.fail(command, "нет результата", "NO_RESULT")
     await plant.consume_until(run_id, "read", "FAILED")
     await plant.finish()
 
     run = await plant.api.run(run_id)
     read = await plant.node(run_id, "read")
     assert run["state"] == "FAILED"
-    assert read["error"] == "executor lost"
+    assert read["error"] == "нет результата"
     assert await plant.state(run_id, "publish") == "SKIPPED"
     assert await plant.api.versions(UUID(run["outputs"]["result"]["dataset_id"])) == []
 

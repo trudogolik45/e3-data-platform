@@ -8,6 +8,11 @@
 он не повторяет: их проверяют тесты блоков на Spark. Только после записи отвечает
 событиями в `events.v1`. Тест сам решает, чем ответить:
 успехом, падением до записи или повторной доставкой события.
+
+Для сценариев сбоев есть и настоящий `ExecutionController` над кластером в
+памяти (`cluster`: SparkApplication и pod'ы): тест доставляет ему команды,
+двигает состояния Spark и pod'ов, а итог Controller выводит сам. Новый
+`controller()` над тем же `cluster` — рестарт Controller.
 """
 
 import asyncio
@@ -17,6 +22,7 @@ import hashlib
 import io
 from types import TracebackType
 from typing import Any, Self, cast
+from uuid import UUID
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -24,7 +30,10 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRecord, TopicPa
 from aiokafka.admin import AIOKafkaAdminClient
 from mypy_boto3_s3 import S3Client
 
-from e3.shared.contracts import ExecutionResult, ResolvedInput
+from e3.execution.controller import ExecutionController
+from e3.execution.results import StoredResults
+from e3.execution.workload import Pod, WorkloadConfig, workload_name
+from e3.shared.contracts import RESULT_FILE, ExecutionResult, ResolvedInput
 from e3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
 from e3.shared.messages import (
     COMMANDS_TOPIC,
@@ -32,15 +41,29 @@ from e3.shared.messages import (
     ExecutionEvent,
     ExecutionFailed,
     ExecutionSucceeded,
+    FailureReason,
+    ReconcileExecution,
     SubmitExecution,
     failed,
     parse_command,
     started,
     succeeded,
 )
+from e3.shared.storage import ObjectStorage
+from tests.fakes.spark_applications import InMemorySparkApplications
 
 DATA_FILE = "data/part-00000.parquet"
 COMMAND_TIMEOUT_SECONDS = 15
+QUIET_SECONDS = 1
+WORKLOAD = WorkloadConfig(
+    namespace="default",
+    service_account="spark-operator-spark",
+    spark_version="3.5.9",
+    s3_endpoint_url="http://minio:9000",
+    s3_secret="e3-s3",
+)
+
+type Command = SubmitExecution | ReconcileExecution
 
 
 class FakeExecutionController:
@@ -52,6 +75,7 @@ class FakeExecutionController:
             bootstrap_servers=bootstrap_servers, enable_auto_commit=False
         )
         self._producer = AIOKafkaProducer(bootstrap_servers=bootstrap_servers, acks="all")
+        self.cluster = InMemorySparkApplications()
 
     async def __aenter__(self) -> Self:
         """Слушает только команды, отправленные после старта."""
@@ -82,11 +106,49 @@ class FakeExecutionController:
         await self._consumer.stop()
         await self._producer.stop()
 
-    async def next_command(self) -> SubmitExecution:
+    async def next_command(self) -> Command:
         async with asyncio.timeout(COMMAND_TIMEOUT_SECONDS):
-            message = cast("ConsumerRecord[bytes, bytes]", await self._consumer.getone())
+            return await self._command()
+
+    async def submission(self, node_run_id: UUID) -> SubmitExecution:
+        """Ближайшая SubmitExecution для NodeRun; чужие команды пропускает."""
+        while True:
+            command = await self.next_command()
+            if isinstance(command, SubmitExecution) and command.node_run_id == node_run_id:
+                return command
+
+    async def quiet_commands(self) -> list[Command]:
+        """Все команды, пришедшие до паузы в `QUIET_SECONDS`."""
+        commands: list[Command] = []
+        while True:
+            try:
+                async with asyncio.timeout(QUIET_SECONDS):
+                    commands.append(await self._command())
+            except TimeoutError:
+                return commands
+
+    async def _command(self) -> Command:
+        message = cast("ConsumerRecord[bytes, bytes]", await self._consumer.getone())
         assert message.value is not None
         return parse_command(message.value)
+
+    def controller(self) -> ExecutionController:
+        """Настоящий Execution Controller над `cluster`; новый вызов — рестарт Controller."""
+        results = StoredResults(ObjectStorage(self._s3, self._s3, self._bucket))
+        return ExecutionController(self.cluster, _Events(self), results, WORKLOAD)
+
+    def run_spark(self, command: SubmitExecution) -> None:
+        """Spark Operator запустил попытку: driver работает."""
+        self.cluster.set_state(workload_name(command.attempt_id), "RUNNING")
+        self.cluster.set_pods(command.attempt_id, Pod(phase="Running"))
+
+    def complete_spark(self, command: SubmitExecution) -> None:
+        """Блок записал выходы и ExecutionResult, driver завершился."""
+        result = self.execute(command)
+        key = self._key(f"{command.payload.context.output_prefix}/{RESULT_FILE}")
+        self._s3.put_object(Bucket=self._bucket, Key=key, Body=result.model_dump_json().encode())
+        self.cluster.set_state(workload_name(command.attempt_id), "COMPLETED")
+        self.cluster.set_pods(command.attempt_id, Pod(phase="Succeeded"))
 
     def execute(self, command: SubmitExecution) -> ExecutionResult:
         """CSV на `source` → Parquet на `data`, как `Read`; Parquet → копия на `result`."""
@@ -129,9 +191,11 @@ class FakeExecutionController:
         await self.send(started(command))
         return await self.send(succeeded(command, result))
 
-    async def fail(self, command: SubmitExecution, error: str) -> ExecutionFailed:
+    async def fail(
+        self, command: SubmitExecution, error: str, reason: FailureReason = "SPARK_FAILED"
+    ) -> ExecutionFailed:
         """Падает до записи данных."""
-        return await self.send(failed(command, error))
+        return await self.send(failed(command, error, reason))
 
     async def send[E: ExecutionEvent](self, event: E) -> E:
         """Шлёт событие; повторный вызов с тем же событием — повторная доставка."""
@@ -151,6 +215,16 @@ class FakeExecutionController:
 
     def _key(self, uri: str) -> str:
         return uri.removeprefix(f"s3://{self._bucket}/")
+
+
+class _Events:
+    """События настоящего Controller уходят в `events.v1` через Fake."""
+
+    def __init__(self, fake: FakeExecutionController) -> None:
+        self._fake = fake
+
+    async def send(self, event: ExecutionEvent) -> None:
+        await self._fake.send(event)
 
 
 def write_parquet_output(

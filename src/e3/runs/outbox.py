@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from e3.runs.models import InboxRow, OutboxRow
-from e3.shared.messages import COMMANDS_TOPIC, SubmitExecution
+from e3.shared.messages import COMMANDS_TOPIC, ReconcileExecution, SubmitExecution
 
 RELAY_BATCH = 100
 RELAY_LEASE = timedelta(minutes=1)
@@ -32,7 +32,7 @@ class Publisher(Protocol):
         ...
 
 
-def enqueue(session: AsyncSession, command: SubmitExecution) -> None:
+def enqueue(session: AsyncSession, command: SubmitExecution | ReconcileExecution) -> None:
     session.add(
         OutboxRow(
             id=command.event_id,
@@ -41,6 +41,16 @@ def enqueue(session: AsyncSession, command: SubmitExecution) -> None:
             payload=command.model_dump(mode="json"),
         )
     )
+
+
+async def unsent(session: AsyncSession, ids: list[UUID]) -> set[UUID]:
+    """Те из `ids`, что лежат в outbox и ещё не отправлены."""
+    if not ids:
+        return set()
+    found = await session.scalars(
+        select(OutboxRow.id).where(OutboxRow.id.in_(ids), OutboxRow.published_at.is_(None))
+    )
+    return set(found)
 
 
 async def first_delivery(session: AsyncSession, event_id: UUID) -> bool:

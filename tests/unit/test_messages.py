@@ -7,12 +7,17 @@ from pydantic import ValidationError
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
     ExecutionFailed,
+    ExecutionLost,
     ExecutionSucceeded,
     Failure,
+    ReconcileExecution,
     Submission,
     SubmitExecution,
     failed,
+    lost,
+    parse_command,
     parse_event,
+    reconcile,
     started,
 )
 from e3.shared.schemas import json_schemas
@@ -96,13 +101,16 @@ def test_resent_event_of_attempt_keeps_event_id_for_inbox() -> None:
     submitted = command()
 
     assert started(submitted).event_id == started(submitted).event_id
-    assert failed(submitted, "a").event_id == failed(submitted, "b").event_id
+    assert (
+        failed(submitted, "a", "SPARK_FAILED").event_id
+        == failed(submitted, "b", "NO_RESULT").event_id
+    )
 
 
 def test_events_of_different_types_or_attempts_have_different_ids() -> None:
     submitted = command()
 
-    assert started(submitted).event_id != failed(submitted, "boom").event_id
+    assert started(submitted).event_id != failed(submitted, "boom", "SPARK_FAILED").event_id
     assert started(submitted).event_id != started(command()).event_id
     assert started(submitted).event_id != submitted.event_id
 
@@ -117,4 +125,54 @@ def test_unknown_event_type_is_rejected() -> None:
 def test_json_schema_publishes_kafka_messages() -> None:
     schemas = json_schemas()
 
-    assert {"SubmitExecution", "ExecutionEvent"} <= set(schemas)
+    assert {"SubmitExecution", "ReconcileExecution", "ExecutionCommand", "ExecutionEvent"} <= set(
+        schemas
+    )
+
+
+def test_failure_of_old_format_has_unknown_reason() -> None:
+    raw = (
+        failed(command(), "boom", "SPARK_FAILED")
+        .to_bytes()
+        .replace(b',"reason":"SPARK_FAILED"', b"")
+    )
+
+    parsed = parse_event(raw)
+
+    assert isinstance(parsed, ExecutionFailed)
+    assert parsed.payload.reason == "UNKNOWN"
+
+
+def test_controller_failure_carries_reason() -> None:
+    event = parse_event(failed(command(), "boom", "SUBMISSION_FAILED").to_bytes())
+
+    assert isinstance(event, ExecutionFailed)
+    assert (event.payload.error, event.payload.reason) == ("boom", "SUBMISSION_FAILED")
+
+
+def test_lost_attempt_is_own_event_with_stable_id() -> None:
+    submitted = command()
+
+    event = parse_event(lost(submitted).to_bytes())
+
+    assert isinstance(event, ExecutionLost)
+    assert event.event_id == lost(submitted).event_id
+    assert event.event_id != failed(submitted, "boom", "SPARK_FAILED").event_id
+
+
+def test_reconcile_carries_original_submission_and_id_per_check() -> None:
+    submitted = command()
+
+    first, second = reconcile(submitted, 1), reconcile(submitted, 2)
+
+    assert parse_command(first.to_bytes()) == first
+    assert first.payload == submitted.payload
+    assert first.event_id == reconcile(submitted, 1).event_id
+    assert first.event_id != second.event_id
+
+
+def test_command_type_selects_model() -> None:
+    submitted = command()
+
+    assert parse_command(submitted.to_bytes()) == submitted
+    assert isinstance(parse_command(reconcile(submitted, 1).to_bytes()), ReconcileExecution)

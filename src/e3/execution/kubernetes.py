@@ -1,8 +1,9 @@
-"""SparkApplications в Kubernetes API (CRD Kubeflow Spark Operator)."""
+"""SparkApplications (CRD Kubeflow Spark Operator) и pod'ы попыток в Kubernetes API."""
 
 from typing import Any
+from uuid import UUID
 
-from kubernetes_asyncio.client import CustomObjectsApi
+from kubernetes_asyncio.client import CoreV1Api, CustomObjectsApi
 from kubernetes_asyncio.client.exceptions import ApiException
 
 from e3.execution.workload import (
@@ -11,18 +12,21 @@ from e3.execution.workload import (
     PLURAL,
     REPORTED_LABEL,
     VERSION,
+    Pod,
     Reported,
 )
 
+NOT_FOUND = 404
 ALREADY_EXISTS = 409
 
 
 class KubernetesSparkApplications:
-    def __init__(self, api: CustomObjectsApi, namespace: str) -> None:
+    def __init__(self, api: CustomObjectsApi, core: CoreV1Api, namespace: str) -> None:
         self._api = api
+        self._core = core
         self._namespace = namespace
 
-    async def create(self, manifest: dict[str, Any]) -> None:
+    async def create(self, manifest: dict[str, Any]) -> bool:
         try:
             await self._api.create_namespaced_custom_object(
                 GROUP, VERSION, self._namespace, PLURAL, manifest
@@ -30,6 +34,19 @@ class KubernetesSparkApplications:
         except ApiException as error:
             if error.status != ALREADY_EXISTS:
                 raise
+            return False
+        return True
+
+    async def get(self, name: str) -> dict[str, Any] | None:
+        try:
+            found: dict[str, Any] = await self._api.get_namespaced_custom_object(
+                GROUP, VERSION, self._namespace, PLURAL, name
+            )
+        except ApiException as error:
+            if error.status != NOT_FOUND:
+                raise
+            return None
+        return found
 
     async def unreported(self) -> list[dict[str, Any]]:
         listed: dict[str, Any] = await self._api.list_namespaced_custom_object(
@@ -52,3 +69,16 @@ class KubernetesSparkApplications:
             name,
             [{"op": "add", "path": label, "value": str(reported)}],
         )
+
+    async def pods(self, attempt_id: UUID) -> list[Pod]:
+        listed = await self._core.list_namespaced_pod(
+            self._namespace, label_selector=f"{ATTEMPT_LABEL}={attempt_id}"
+        )
+        return [
+            Pod(
+                phase=pod.status.phase or "Unknown",
+                # Заглушки типов клиента обещают datetime, а у живого pod'а там None.
+                terminating=bool(pod.metadata.deletion_timestamp),
+            )
+            for pod in listed.items
+        ]

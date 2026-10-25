@@ -4,6 +4,7 @@
 Ключ сообщения — `node_run_id`: события одного NodeRun идут по порядку.
 `event_id` события попытки выводится из `attempt_id` и `type`: повторно
 отправленное событие получает тот же id, и inbox получателя его отбрасывает.
+`ReconcileExecution` получает id из `attempt_id` и номера проверки.
 """
 
 from datetime import UTC, datetime
@@ -49,14 +50,32 @@ class SubmitExecution(_Envelope):
     payload: Submission
 
 
+class ReconcileExecution(_Envelope):
+    """Просьба проверить попытку, о которой давно нет событий; `payload` — исходная Submission."""
+
+    type: Literal["ReconcileExecution"] = "ReconcileExecution"
+    payload: Submission
+
+
+ExecutionCommand = Annotated[SubmitExecution | ReconcileExecution, Field(discriminator="type")]
+
+_commands = TypeAdapter[ExecutionCommand](ExecutionCommand)
+
+
 class Empty(BaseModel):
     model_config = ConfigDict(frozen=True)
+
+
+# Причина провала, которую Execution Controller выводит из терминального состояния Kubernetes.
+FailureReason = Literal["SPARK_FAILED", "SUBMISSION_FAILED", "NO_RESULT", "UNKNOWN"]
 
 
 class Failure(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     error: str
+    # Сообщения без причины пришли от Controller старого формата.
+    reason: FailureReason = "UNKNOWN"
 
 
 class ExecutionStarted(_Envelope):
@@ -74,19 +93,45 @@ class ExecutionFailed(_Envelope):
     payload: Failure
 
 
+class ExecutionLost(_Envelope):
+    """Попытка доказуемо мертва без итога: `SparkApplication` пропал, на его месте Attempt Fence."""
+
+    type: Literal["ExecutionLost"] = "ExecutionLost"
+    payload: Empty = Field(default_factory=Empty)
+
+
 ExecutionEvent = Annotated[
-    ExecutionStarted | ExecutionSucceeded | ExecutionFailed, Field(discriminator="type")
+    ExecutionStarted | ExecutionSucceeded | ExecutionFailed | ExecutionLost,
+    Field(discriminator="type"),
 ]
 
 _events = TypeAdapter[ExecutionEvent](ExecutionEvent)
 
 
-def _attempt_event_id(command: SubmitExecution, event: type[_Envelope]) -> UUID:
+type Command = SubmitExecution | ReconcileExecution
+
+
+def _attempt_event_id(command: Command, event: type[_Envelope]) -> UUID:
     """Одно и то же событие попытки всегда получает один и тот же id."""
     return uuid5(_EVENT_ID_NAMESPACE, f"{command.attempt_id}/{event.__name__}")
 
 
-def started(command: SubmitExecution) -> ExecutionStarted:
+def reconcile_id(attempt_id: UUID, check: int) -> UUID:
+    return uuid5(attempt_id, f"reconcile/{check}")
+
+
+def reconcile(command: Command, check: int) -> ReconcileExecution:
+    """Проверка номер `check` попытки: у каждой свой id, повтор той же — тот же."""
+    return ReconcileExecution(
+        event_id=reconcile_id(command.attempt_id, check),
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
+        payload=command.payload,
+    )
+
+
+def started(command: Command) -> ExecutionStarted:
     return ExecutionStarted(
         event_id=_attempt_event_id(command, ExecutionStarted),
         node_run_id=command.node_run_id,
@@ -95,7 +140,7 @@ def started(command: SubmitExecution) -> ExecutionStarted:
     )
 
 
-def succeeded(command: SubmitExecution, result: ExecutionResult) -> ExecutionSucceeded:
+def succeeded(command: Command, result: ExecutionResult) -> ExecutionSucceeded:
     return ExecutionSucceeded(
         event_id=_attempt_event_id(command, ExecutionSucceeded),
         node_run_id=command.node_run_id,
@@ -105,13 +150,22 @@ def succeeded(command: SubmitExecution, result: ExecutionResult) -> ExecutionSuc
     )
 
 
-def failed(command: SubmitExecution, error: str) -> ExecutionFailed:
+def failed(command: Command, error: str, reason: FailureReason) -> ExecutionFailed:
     return ExecutionFailed(
         event_id=_attempt_event_id(command, ExecutionFailed),
         node_run_id=command.node_run_id,
         attempt_id=command.attempt_id,
         trace_id=command.trace_id,
-        payload=Failure(error=error),
+        payload=Failure(error=error, reason=reason),
+    )
+
+
+def lost(command: Command) -> ExecutionLost:
+    return ExecutionLost(
+        event_id=_attempt_event_id(command, ExecutionLost),
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
     )
 
 
@@ -119,5 +173,5 @@ def parse_event(raw: bytes) -> ExecutionEvent:
     return _events.validate_json(raw)
 
 
-def parse_command(raw: bytes) -> SubmitExecution:
-    return SubmitExecution.model_validate_json(raw)
+def parse_command(raw: bytes) -> SubmitExecution | ReconcileExecution:
+    return _commands.validate_json(raw)

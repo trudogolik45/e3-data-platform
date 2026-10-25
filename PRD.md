@@ -295,8 +295,8 @@ Kafka используется только там, где требуется а
 
 | Topic                      | Направление               | Содержание                                    |
 | -------------------------- | ------------------------- | --------------------------------------------- |
-| `e3.execution.commands.v1` | Orchestrator → Controller | `SubmitExecution`, `CancelExecution`          |
-| `e3.execution.events.v1`   | Controller → Orchestrator | `Started`, `Succeeded`, `Failed`, `Cancelled` |
+| `e3.execution.commands.v1` | Orchestrator → Controller | `SubmitExecution`, `ReconcileExecution`, `CancelExecution` |
+| `e3.execution.events.v1`   | Controller → Orchestrator | `Started`, `Succeeded`, `Failed`, `Lost`, `Cancelled`      |
 
 Каждое сообщение имеет envelope:
 
@@ -320,16 +320,21 @@ Kafka используется только там, где требуется а
 
 ```
 
-`payload` выбирается по `type`: `SubmitExecution` — `executable_ref` блока и `ExecutionContext`, `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error`. Ключ сообщения — `node_run_id`.
+`payload` выбирается по `type`: `SubmitExecution` и `ReconcileExecution` — `executable_ref` блока и `ExecutionContext` (у проверки — исходные, как у попытки), `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error` и `reason`, `ExecutionLost` — пустой. Ключ сообщения — `node_run_id`.
+
+`reason` в `ExecutionFailed` Controller выводит из терминального состояния Kubernetes: `SPARK_FAILED`, `SUBMISSION_FAILED`, `NO_RESULT` (блок завершился без `ExecutionResult`) или `UNKNOWN` (по умолчанию, только у сообщений старого формата). У попытки причин больше: `LOST` (событие `ExecutionLost`) и `OUTPUT_REJECTED` (manifest отвергнут в `FINALIZING`, ставит сам Orchestrator). Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST`, остальные сразу переводят NodeRun в `FAILED`.
 
 Гарантии:
 
 - Kafka доставляет сообщения как минимум один раз.
 - Повторная команда с тем же `attempt_id` не создаёт второй workload.
-- `event_id` события попытки выводится из `attempt_id` и `type`: повторно отправленное событие несёт тот же `event_id`, и inbox Orchestrator его отбрасывает.
+- `event_id` события попытки выводится из `attempt_id` и `type`: повторно отправленное событие несёт тот же `event_id`, и inbox Orchestrator его отбрасывает. `event_id` проверки `ReconcileExecution` — из `attempt_id` и её номера.
 - Orchestrator применяет события только к Current Attempt и допустимому переходу состояния. События остальных попыток игнорируются.
 - Retry решает только Orchestrator: 3 ретрая, максимум 4 попытки на NodeRun. Controller сам не перезапускает.
-- У NodeRun не более одной активной попытки. Новая стартует только после того, как старая доказуемо мертва: `SparkApplication` терминален или удалён, нет pod'ов с её `attempt_id`, Kubernetes не может её восстановить. Иначе reconciliation по таймауту помечает попытку `LOST` после проверки этих условий. См. ADR-0003.
+- У NodeRun не более одной активной попытки. Новая стартует только после того, как старая доказуемо мертва: `SparkApplication` терминален или удалён, нет pod'ов с её `attempt_id`, Kubernetes не может её восстановить. Итог попытки (`Succeeded`, `Failed`, `Lost`) Controller шлёт только после этой проверки. См. ADR-0003.
+- Первый принятый итог попытки окончателен: следующие события той же попытки ничего не меняют.
+- Попытку, о которой нет событий дольше `E3_RECONCILE_AFTER_SECONDS` (600 с), Orchestrator проверяет командой `ReconcileExecution` и повторяет её по тому же таймауту, пока попытка не терминальна; неотправленных проверок на попытку не больше одной. Controller заново шлёт итог терминальной попытки, а пропавший `SparkApplication` заменяет Attempt Fence и шлёт `ExecutionLost`, только когда pod'ов попытки не осталось. Ответа «жива» нет: молчание — не смерть.
+- Attempt Fence — `SparkApplication` с именем попытки и `spec.suspend: true`: Spark Operator его не запускает, а опоздавшая `SubmitExecution` упирается в занятое имя.
 - Transactional outbox исключает разрыв между записью состояния в PostgreSQL и публикацией команды.
 - Inbox/deduplication защищает от повторной обработки.
 - Reconciliation восстанавливает состояние после сбоев и пропущенных событий.
