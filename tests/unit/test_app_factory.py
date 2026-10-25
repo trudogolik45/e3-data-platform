@@ -17,3 +17,24 @@ def test_settings_require_explicit_environment(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(ValidationError, match="environment"):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+def test_oidc_mode_needs_issuer_audience_and_jwks() -> None:
+    settings = Settings(environment="prod", auth_mode="oidc", oidc_issuer="https://idp.test")
+
+    with pytest.raises(RuntimeError, match="oidc_audience"):
+        create_app(settings)
+
+
+def test_oidc_mode_refuses_symmetric_algorithms() -> None:
+    settings = Settings(
+        environment="prod",
+        auth_mode="oidc",
+        oidc_issuer="https://idp.test",
+        oidc_audience="e3-api",
+        oidc_jwks_url="https://idp.test/jwks",
+        oidc_algorithms=["HS256"],
+    )
+
+    with pytest.raises(ValueError, match="алгоритм"):
+        create_app(settings)

@@ -566,12 +566,15 @@ class World:
 
     async def member(self, project_id: UUID, admin: User, role: str) -> User:
         user = await self.user()
+        await self.grant(project_id, admin, user, role)
+        return user
+
+    async def grant(self, project_id: UUID, admin: User, user: User, role: str) -> None:
         added = await (await self.client(admin.token)).post(
             f"/api/v1/projects/{project_id}/members",
             json={"user_id": str(user.user_id), "role": role},
         )
         assert added.status_code == 201, added.text
-        return user
 
     async def set_role(self, project_id: UUID, admin: User, user: User, role: str) -> None:
         changed = await (await self.client(admin.token)).put(
