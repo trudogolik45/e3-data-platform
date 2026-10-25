@@ -343,15 +343,16 @@ Kafka используется только там, где требуется а
 
 ## 7. Жизненный цикл вычислений
 
-`NodeRun`: `PENDING → QUEUED → RUNNING → FINALIZING → SUCCEEDED`, а также `FAILED`, `CANCELLING → CANCELLED`, `SKIPPED` (не запускался, потому что upstream упал).
+`NodeRun`: `PENDING → QUEUED → RUNNING → FINALIZING → SUCCEEDED`, а также `FAILED`, `CANCELLING → CANCELLED` (узел был `QUEUED` или `RUNNING`, его попытку остановили), `SKIPPED` (узел остался `PENDING`: запуск остановили до его старта).
 
 `PipelineRun`: `PENDING → RUNNING → SUCCEEDED | FAILED`, а также `CANCELLING → CANCELLED`. Своего `FINALIZING` у `PipelineRun` нет.
 
 - `FINALIZING` принадлежит `NodeRun`: Spark закончил, Orchestrator проверяет manifest и принимает `NodeOutput`. Состояние `READY` принадлежит `NodeOutput`.
 - `PipelineRun` завершается только тогда, когда все узлы в терминальных состояниях.
-- Fail-fast: когда у узла кончились retry, `PipelineRun` уходит в `FAILED`. Работающие узлы отменяются, остальные становятся `SKIPPED`.
-- Отмена — запрос, а не мгновенный terminal state. При `cancel` операция переходит в `CANCELLING`, workload останавливается, и только после подтверждения фиксируется `CANCELLED`.
-- Начатую публикацию (`Publish Dataset`) отменить нельзя. Она доходит до конца, потом запуск завершается.
+- Fail-fast: когда у узла кончились retry, Orchestrator больше не запускает узлы, работающие (`QUEUED`, `RUNNING`) отменяет, остальные становятся `SKIPPED`. Пока остановка не доказана, `PipelineRun` остаётся `RUNNING`, потом — `FAILED`; упавший узел запоминается в `failed_node_run_id`.
+- Отмена — запрос, а не мгновенный terminal state. При `cancel` операция переходит в `CANCELLING`, workload останавливается, и только после подтверждения фиксируется `CANCELLED`. Таймаут остановки не доказывает: по нему Orchestrator спрашивает Controller снова.
+- Начатый fail-fast отмена не перебивает: запуск с упавшим узлом завершается `FAILED`.
+- Начатые проверку manifest (`FINALIZING`) и публикацию (`Publish Dataset`) отменить нельзя. Они доходят до конца, потом запуск завершается.
 - Уже опубликованные `DatasetVersion` не откатываются при `FAILED` или `CANCELLED` запуска.
 
 ## 8. Data Lake и публикация результатов
