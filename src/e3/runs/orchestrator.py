@@ -89,6 +89,9 @@ AWAITING_OUTCOME = frozenset({NodeState.QUEUED, NodeState.RUNNING})
 # NodeRun, у которого Current Attempt ещё может прислать итог.
 OPEN_ATTEMPT = AWAITING_OUTCOME | {NodeState.CANCELLING}
 # Запуск закончился: отменять нечего.
+# Терминальная причина Publish Dataset без ретрая: дальше Fail-fast.
+ACCESS_REVOKED = "access_revoked: у Initiator нет Role Editor в Project целевого Dataset"
+
 FINISHED = frozenset({RunState.SUCCEEDED, RunState.FAILED})
 
 
@@ -548,6 +551,9 @@ class RunOrchestrator:
         if publication is None:
             await self._transition(node_run_id, NodeState.RUNNING, _failed("нет NodeOutput"))
             return
+        if not await self._initiator_may_publish(publication):
+            await self._transition(node_run_id, NodeState.RUNNING, _failed(ACCESS_REVOKED))
+            return
         try:
             version = await self._datasets.publish(
                 project_id=publication.project_id,
@@ -559,6 +565,15 @@ class RunOrchestrator:
             await self._transition(node_run_id, NodeState.RUNNING, _failed(str(error)))
             return
         await self._transition(node_run_id, NodeState.RUNNING, _published(version.version_id))
+
+    async def _initiator_may_publish(self, publication: "_Publication") -> bool:
+        """Текущий Membership Initiator, а не права на момент запуска (ADR-0004)."""
+        try:
+            dataset = await self._datasets.get_dataset(publication.dataset_id)
+        except catalog.DatasetNotFound:
+            return True  # отказ с причиной даст сама публикация
+        role = await self._identity.role_of(publication.initiator, dataset.project_id)
+        return role is not None and role.includes(Role.EDITOR)
 
     async def _publication(self, node_run_id: UUID) -> "_Publication | None":
         """Что публикует узел Publish Dataset; `None` — входа NodeOutput нет."""
@@ -573,7 +588,13 @@ class RunOrchestrator:
             run = await session.get_one(PipelineRunRow, node.pipeline_run_id)
         if node.target_dataset_id is None:
             raise RuntimeError(f"у Publish Dataset NodeRun {node.id} нет целевого Dataset")
-        return _Publication(run.project_id, node.target_dataset_id, source, output.manifest_uri)
+        return _Publication(
+            run.project_id,
+            run.initiated_by_user_id,
+            node.target_dataset_id,
+            source,
+            output.manifest_uri,
+        )
 
     async def _transition(self, node_run_id: UUID, expected: NodeState, change: NodeChange) -> None:
         """Меняет NodeRun, если он всё ещё в `expected`, и продвигает запуск."""
@@ -598,6 +619,7 @@ class RunOrchestrator:
 @dataclass(frozen=True)
 class _Publication:
     project_id: UUID
+    initiator: UUID
     dataset_id: UUID
     source: NodeOutputRef
     manifest_uri: str

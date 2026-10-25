@@ -3,6 +3,7 @@ import base64
 import hashlib
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -14,6 +15,7 @@ import pytest
 from aiokafka.errors import KafkaError
 from alembic import command
 from alembic.config import Config
+from fastapi import FastAPI
 from mypy_boto3_s3 import S3Client
 from pydantic import SecretStr
 from sqlalchemy import text
@@ -36,6 +38,10 @@ from e3.settings import Settings
 from e3.shared.messages import ExecutionEvent, SubmitExecution
 from e3.shared.storage import ObjectStorage
 from tests.fakes.execution_controller import FakeExecutionController
+from tests.fakes.oidc import AUDIENCE as OIDC_AUDIENCE
+from tests.fakes.oidc import ISSUER as OIDC_ISSUER
+from tests.fakes.oidc import JWKS_URL as OIDC_JWKS_URL
+from tests.fakes.oidc import FakeOidcProvider
 from tests.integration.graphs import (
     block_spec,
     port,
@@ -491,3 +497,119 @@ async def plant(kafka: str, settings: Settings, s3: S3Client) -> AsyncIterator[P
     ):
         api = Api(client, settings.dev_project_id)
         yield Plant(api, orchestrator, publisher, handler, events, fake, s3, settings)
+
+
+@pytest.fixture(scope="session")
+def oidc() -> FakeOidcProvider:
+    return FakeOidcProvider()
+
+
+@pytest.fixture
+def oidc_settings(base_settings: Settings) -> Settings:
+    return base_settings.model_copy(
+        update={
+            "auth_mode": "oidc",
+            "oidc_issuer": OIDC_ISSUER,
+            "oidc_audience": OIDC_AUDIENCE,
+            "oidc_jwks_url": OIDC_JWKS_URL,
+        }
+    )
+
+
+@dataclass
+class User:
+    subject: str
+    token: str
+    user_id: UUID
+
+
+class World:
+    """OIDC-стенд: пользователи с токенами, их Project и клиенты от их имени."""
+
+    def __init__(self, app: FastAPI, oidc: FakeOidcProvider, clients: AsyncExitStack) -> None:
+        self.app = app
+        self.oidc = oidc
+        self._clients = clients
+
+    async def client(self, token: str | None) -> httpx.AsyncClient:
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.app), base_url="http://e3", headers=headers
+        )
+        return await self._clients.enter_async_context(client)
+
+    async def api(self, user: User, project_id: UUID) -> Api:
+        return Api(await self.client(user.token), project_id)
+
+    async def user(self) -> User:
+        """Новый User: первый вход через `GET /me`."""
+        subject = uuid4().hex
+        token = self.oidc.token(subject)
+        me = await (await self.client(token)).get("/api/v1/me")
+        assert me.status_code == 200, me.text
+        return User(subject, token, UUID(me.json()["user_id"]))
+
+    async def project(self, admin: User) -> UUID:
+        platform = await self.client(PLATFORM_TOKEN)
+        organization = await platform.post("/api/v1/organizations", json={"name": "org"})
+        assert organization.status_code == 201, organization.text
+        project = await platform.post(
+            "/api/v1/projects",
+            json={
+                "organization_id": organization.json()["organization_id"],
+                "name": f"project-{uuid4()}",
+                "admin": {"user_id": str(admin.user_id)},
+            },
+        )
+        assert project.status_code == 201, project.text
+        return UUID(project.json()["project_id"])
+
+    async def member(self, project_id: UUID, admin: User, role: str) -> User:
+        user = await self.user()
+        added = await (await self.client(admin.token)).post(
+            f"/api/v1/projects/{project_id}/members",
+            json={"user_id": str(user.user_id), "role": role},
+        )
+        assert added.status_code == 201, added.text
+        return user
+
+    async def set_role(self, project_id: UUID, admin: User, user: User, role: str) -> None:
+        changed = await (await self.client(admin.token)).put(
+            f"/api/v1/projects/{project_id}/members/{user.user_id}", json={"role": role}
+        )
+        assert changed.status_code == 200, changed.text
+
+
+@pytest.fixture
+async def world(oidc_settings: Settings, oidc: FakeOidcProvider) -> AsyncIterator[World]:
+    app = create_app(oidc_settings, oidc_http=oidc.http())
+    async with AsyncExitStack() as clients:
+        yield World(app, oidc, clients)
+
+
+@dataclass
+class OidcPlant:
+    """Plant на OIDC-стенде: `plant.api` — от имени `admin` нового `project_id`."""
+
+    plant: Plant
+    world: World
+    admin: User
+    project_id: UUID
+
+
+@pytest.fixture
+async def oidc_plant(
+    kafka: str, world: World, oidc_settings: Settings, s3: S3Client
+) -> AsyncIterator[OidcPlant]:
+    orchestrator: RunOrchestrator = world.app.state.runs
+    handler = Handler(orchestrator)
+    admin = await world.user()
+    project_id = await world.project(admin)
+    async with (
+        kafka_publisher(kafka) as publisher,
+        event_consumer(kafka, f"test-{uuid4()}", handler) as events,
+        FakeExecutionController(kafka, s3, oidc_settings.s3_bucket) as fake,
+    ):
+        api = await world.api(admin, project_id)
+        plant = Plant(api, orchestrator, publisher, handler, events, fake, s3, oidc_settings)
+        yield OidcPlant(plant, world, admin, project_id)
