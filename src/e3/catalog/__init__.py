@@ -6,12 +6,13 @@
 
 from e3.catalog.api import router
 from e3.catalog.catalog import Catalog
-from e3.catalog.datasets import DatasetNotFound
+from e3.catalog.datasets import Dataset, DatasetNotFound
 from e3.catalog.publications import PublicationRejected
 from e3.catalog.versions import DatasetVersion, DatasetVersionNotFound
 
 __all__ = [
     "Catalog",
+    "Dataset",
     "DatasetNotFound",
     "DatasetVersion",
     "DatasetVersionNotFound",

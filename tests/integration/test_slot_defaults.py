@@ -1,51 +1,23 @@
 """Late Binding со значениями по умолчанию: слоты без привязки берутся из PipelineVersion."""
 
-from typing import Any
 from uuid import UUID, uuid4
 
-import httpx
 import pytest
 
 from e3.api.app import create_app
 from e3.catalog import Catalog
 from e3.settings import Settings
 from e3.shared.contracts import DatasetVersionRef
-from tests.integration.conftest import RUN_CSV, Api, Plant, new_block
-from tests.integration.graphs import read_graph
+from tests.integration.conftest import (
+    Api,
+    Plant,
+    World,
+    pipeline_with_defaults,
+    publish_defaults,
+    uploaded_version,
+)
 
 pytestmark = pytest.mark.integration
-
-
-async def uploaded_version(api: Api, dataset_id: UUID) -> str:
-    response = await api.upload_csv(dataset_id, RUN_CSV)
-    assert response.status_code == 200, response.text
-    return response.json()["version"]["version_id"]
-
-
-async def read_graph_with_defaults(
-    api: Api, source: dict[str, Any] | None, result: dict[str, Any] | None
-) -> dict[str, Any]:
-    graph = read_graph(await new_block(api, "read", "data"))
-    graph["input_slots"] = [{"name": "source", "default": source}]
-    graph["output_slots"] = [{"name": "result", "default": result}]
-    return graph
-
-
-async def publish_defaults(
-    api: Api, source: dict[str, Any] | None, result: dict[str, Any] | None
-) -> tuple[UUID, httpx.Response]:
-    pipeline_id = await api.new_pipeline(f"pipeline-{uuid4()}")
-    await api.save_draft(pipeline_id, await read_graph_with_defaults(api, source, result))
-    return pipeline_id, await api.publish(pipeline_id)
-
-
-async def pipeline_with_defaults(
-    api: Api, source: dict[str, Any] | None, result: dict[str, Any] | None
-) -> dict[str, Any]:
-    """Тело запуска без привязок для пайплайна со значениями по умолчанию."""
-    pipeline_id, published = await publish_defaults(api, source, result)
-    assert published.status_code == 201, published.text
-    return {"pipeline_id": str(pipeline_id), "pipeline_version": published.json()["version_number"]}
 
 
 async def test_run_takes_exact_version_and_target_from_defaults(api: Api) -> None:
@@ -111,6 +83,24 @@ async def test_request_binding_overrides_default(api: Api) -> None:
 
     assert response.status_code == 202, response.text
     assert response.json()["inputs"] == override
+
+
+async def test_explicit_input_from_readable_foreign_project_is_accepted(world: World) -> None:
+    user, foreign_admin = await world.user(), await world.user()
+    home_id, foreign_id = await world.project(user), await world.project(foreign_admin)
+    foreign_api = await world.api(foreign_admin, foreign_id)
+    foreign = await foreign_api.new_dataset(f"f-{uuid4()}")
+    foreign_version = await uploaded_version(foreign_api, foreign)
+    await world.grant(foreign_id, foreign_admin, user, "Viewer")
+    api = await world.api(user, home_id)
+    target = await api.new_dataset(f"r-{uuid4()}")
+    body = await pipeline_with_defaults(api, None, {"dataset_id": str(target)})
+    binding = {"source": {"dataset_id": str(foreign), "version_id": foreign_version}}
+
+    response = await api.start_run(body | {"inputs": binding}, key=str(uuid4()))
+
+    assert response.status_code == 202, response.text
+    assert response.json()["inputs"] == binding
 
 
 async def test_slot_without_binding_or_default_is_rejected(api: Api) -> None:

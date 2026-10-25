@@ -48,6 +48,7 @@ from e3.runs.bindings import (
     OutputBinding,
     RunRequest,
     RunRequestInvalid,
+    check_not_archived,
     resolve_bindings,
 )
 from e3.runs.finalization import OutputRejected, execution_prefix, verify_outputs
@@ -186,8 +187,6 @@ class RunOrchestrator:
             existing = await _find_by_key(session, pipeline.project_id, idempotency_key)
         if existing is not None:
             return _same_request(existing, request)
-        if pipeline.archived:
-            raise PipelineArchived(str(pipeline.pipeline_id))
         try:
             version = await self._pipelines.get_version(
                 pipeline.pipeline_id, request.pipeline_version
@@ -360,6 +359,9 @@ class RunOrchestrator:
     ) -> PipelineRun:
         run_id = uuid4()
         async with self._sessions.begin() as session:
+            # Сначала Pipeline, затем Dataset по возрастанию id: единый порядок исключает deadlock.
+            pipeline = await self._pipelines.lock(session, request.pipeline_id)
+            datasets = await self._datasets.lock_datasets(session, bindings.dataset_ids())
             inserted = await session.scalar(
                 insert(PipelineRunRow)
                 .values(
@@ -382,6 +384,11 @@ class RunOrchestrator:
                 if existing is None:
                     raise RuntimeError(f"PipelineRun с ключом {idempotency_key} исчез")
                 return _same_request(existing, request)
+            # Архив проверяется после вставки: повтор с тем же ключом отдаёт исходный
+            # запуск, а исключение откатывает только что вставленный.
+            if pipeline.archived:
+                raise PipelineArchived(str(pipeline.pipeline_id))
+            check_not_archived(bindings, datasets)
             session.add_all(build_node_runs(run_id, graph, bindings, specs))
             row = await session.get_one(PipelineRunRow, run_id)
             return _to_run(row)

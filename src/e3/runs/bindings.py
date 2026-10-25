@@ -3,8 +3,8 @@
 Late Binding: при создании PipelineRun каждый слот получает точное значение —
 из запроса или из значения по умолчанию PipelineVersion. Input Slot —
 существующая DatasetVersion, Output Slot — существующий Dataset того же
-Project. «Последняя версия» превращается в точную здесь же, архивные Dataset
-отклоняются.
+Project. «Последняя версия» превращается в точную здесь же. Архивные Dataset
+отклоняет `check_not_archived` в транзакции, которая создаёт запуск.
 """
 
 import hashlib
@@ -57,6 +57,19 @@ class Bindings:
 
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
+
+    def dataset_ids(self) -> set[UUID]:
+        bound = [*self.inputs.values(), *self.outputs.values()]
+        return {binding.dataset_id for binding in bound}
+
+
+def check_not_archived(bindings: Bindings, datasets: Mapping[UUID, catalog.Dataset]) -> None:
+    """Архивный Dataset нельзя привязать к новому запуску (PRD §3)."""
+    slots = [("Input Slot", bindings.inputs), ("Output Slot", bindings.outputs)]
+    for kind, bound in slots:
+        for slot, binding in bound.items():
+            if datasets[binding.dataset_id].archived:
+                raise RunRequestInvalid(f"{kind} {slot}: Dataset в архиве")
 
 
 async def resolve_bindings(
@@ -121,8 +134,6 @@ async def _check_input(
         raise RunRequestInvalid(f"Input Slot {slot}: DatasetVersion из другого Dataset")
     dataset = await datasets.get_dataset(binding.dataset_id)
     authorize(principal, dataset.project_id, Role.VIEWER)
-    if dataset.archived:
-        raise RunRequestInvalid(f"Input Slot {slot}: Dataset в архиве")
 
 
 async def _check_output(
@@ -140,5 +151,3 @@ async def _check_output(
     authorize(principal, dataset.project_id, Role.EDITOR)
     if dataset.project_id != project_id:
         raise RunRequestInvalid(f"Output Slot {slot}: Dataset из другого Project")
-    if dataset.archived:
-        raise RunRequestInvalid(f"Output Slot {slot}: Dataset в архиве")

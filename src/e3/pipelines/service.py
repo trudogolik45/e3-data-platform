@@ -74,6 +74,15 @@ class PipelineService:
         async with self._sessions() as session:
             return _to_pipeline(await _pipeline_row(session, pipeline_id))
 
+    async def lock(self, session: AsyncSession, pipeline_id: UUID) -> Pipeline:
+        """Pipeline в транзакции вызывающего; до её конца архивировать его нельзя."""
+        row = await session.scalar(
+            select(PipelineRow).where(PipelineRow.id == pipeline_id).with_for_update(read=True)
+        )
+        if row is None:
+            raise PipelineNotFound(str(pipeline_id))
+        return _to_pipeline(row)
+
     async def archive(self, pipeline_id: UUID) -> Pipeline:
         """Скрывает Pipeline из обращения; повтор ничего не меняет."""
         async with self._sessions.begin() as session:
