@@ -1,5 +1,6 @@
 """Публичный фасад Dataset Catalog поверх сессий PostgreSQL и хранилища."""
 
+from collections.abc import Iterable
 from datetime import timedelta
 from uuid import UUID
 
@@ -36,6 +37,12 @@ class Catalog:
     async def get_dataset(self, dataset_id: UUID) -> Dataset:
         async with self._sessions() as session:
             return await datasets.get_dataset(session, dataset_id)
+
+    async def lock_datasets(
+        self, session: AsyncSession, dataset_ids: Iterable[UUID]
+    ) -> dict[UUID, Dataset]:
+        """Dataset в транзакции вызывающего; до её конца архивировать их нельзя."""
+        return await datasets.lock_datasets(session, dataset_ids)
 
     async def archive_dataset(self, dataset_id: UUID) -> Dataset:
         async with self._sessions.begin() as session:

@@ -347,6 +347,38 @@ async def run_request(api: Api, pipeline: PipelineMaker = new_read_pipeline) -> 
     }
 
 
+async def uploaded_version(api: Api, dataset_id: UUID) -> str:
+    response = await api.upload_csv(dataset_id, RUN_CSV)
+    assert response.status_code == 200, response.text
+    return response.json()["version"]["version_id"]
+
+
+async def read_graph_with_defaults(
+    api: Api, source: dict[str, Any] | None, result: dict[str, Any] | None
+) -> dict[str, Any]:
+    graph = read_graph(await new_block(api, "read", "data"))
+    graph["input_slots"] = [{"name": "source", "default": source}]
+    graph["output_slots"] = [{"name": "result", "default": result}]
+    return graph
+
+
+async def publish_defaults(
+    api: Api, source: dict[str, Any] | None, result: dict[str, Any] | None
+) -> tuple[UUID, httpx.Response]:
+    pipeline_id = await api.new_pipeline(f"pipeline-{uuid4()}")
+    await api.save_draft(pipeline_id, await read_graph_with_defaults(api, source, result))
+    return pipeline_id, await api.publish(pipeline_id)
+
+
+async def pipeline_with_defaults(
+    api: Api, source: dict[str, Any] | None, result: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Тело запуска без привязок для пайплайна со значениями по умолчанию."""
+    pipeline_id, published = await publish_defaults(api, source, result)
+    assert published.status_code == 201, published.text
+    return {"pipeline_id": str(pipeline_id), "pipeline_version": published.json()["version_number"]}
+
+
 def storage_like[S: ObjectStorage](cls: type[S], settings: Settings) -> S:
     """Подменное хранилище `cls` поверх настоящего MinIO стенда."""
     real = create_storage(settings)
