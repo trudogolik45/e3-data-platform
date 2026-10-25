@@ -7,5 +7,12 @@ inputs:
   - { name: source, data_type: dataset }
 outputs:
   - { name: data, data_type: dataset }
-parameters_schema: {}
+parameters_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    # Колонка → тип; остальные колонки остаются string.
+    types:
+      type: object
+      additionalProperties: { enum: [long, double] }
 executable_ref: "@EXECUTABLE_REF@"

@@ -1,4 +1,7 @@
-"""Жизненный цикл `Read → Publish Dataset` через Kafka и Fake Execution Controller.
+"""Жизненный цикл PipelineRun через Kafka и Fake Execution Controller.
+
+Основной сценарий — `Read → Publish Dataset`, многоузловой — `Read → Filter →
+Aggregate → Publish Dataset`.
 
 Шаги Run Orchestrator тест вызывает сам, по одному: так видны все
 промежуточные состояния, и порядок не зависит от фоновых задач.
@@ -20,11 +23,19 @@ from e3.api.app import create_app
 from e3.runs import EventConsumer, OutboxRelay, RunOrchestrator, event_consumer, kafka_publisher
 from e3.runs.models import InboxRow, OutboxRow
 from e3.settings import Settings
-from e3.shared.contracts import DatasetVersionRef
+from e3.shared.contracts import DatasetVersionRef, NodeOutputRef
 from e3.shared.messages import SubmitExecution, failed, started, succeeded
 from e3.shared.storage import ObjectStorage, StorageUnavailable
 from tests.fakes.execution_controller import FakeExecutionController
-from tests.integration.conftest import Api, read_object, run_request, storage_like
+from tests.integration.conftest import (
+    Api,
+    PipelineMaker,
+    new_read_filter_aggregate_pipeline,
+    new_read_pipeline,
+    read_object,
+    run_request,
+    storage_like,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -39,8 +50,9 @@ class Plant:
     s3: S3Client
     settings: Settings
 
-    async def start(self) -> str:
-        response = await self.api.start_run(await run_request(self.api), key=str(uuid4()))
+    async def start(self, pipeline: PipelineMaker = new_read_pipeline) -> str:
+        request = await run_request(self.api, pipeline)
+        response = await self.api.start_run(request, key=str(uuid4()))
         assert response.status_code == 202, response.text
         return response.json()["pipeline_run_id"]
 
@@ -50,15 +62,24 @@ class Plant:
     async def state(self, run_id: str, node_id: str) -> str:
         return (await self.node(run_id, node_id))["state"]
 
-    async def submitted(self, run_id: str) -> SubmitExecution:
-        """Запускает узлы, отправляет outbox и ждёт команду для `read` этого запуска."""
+    async def submitted(self, run_id: str, node_id: str = "read") -> SubmitExecution:
+        """Запускает узлы, отправляет outbox и ждёт команду для `node_id` этого запуска."""
         await drain(self.orchestrator.dispatch_pending)
         await drain(self.relay.publish_pending)
-        read = UUID((await self.node(run_id, "read"))["node_run_id"])
+        node_run_id = UUID((await self.node(run_id, node_id))["node_run_id"])
         while True:
             command = await self.fake.next_command()
-            if command.node_run_id == read:
+            if command.node_run_id == node_run_id:
                 return command
+
+    async def execute(self, run_id: str, node_id: str) -> SubmitExecution:
+        """Проводит BLOCK-узел через Execution Plane и принимает его NodeOutput."""
+        command = await self.submitted(run_id, node_id)
+        await self.fake.succeed(command)
+        await self.consume_until(run_id, node_id, "FINALIZING")
+        await self.orchestrator.finalize_pending()
+        assert await self.state(run_id, node_id) == "SUCCEEDED"
+        return command
 
     async def consume_until(self, run_id: str, node_id: str, state: str) -> None:
         for _ in range(EVENT_POLLS):
@@ -140,6 +161,52 @@ async def test_publication_carries_node_output_manifest_into_parquet_version(
     assert published_manifest(plant, target, version) == read_object(
         plant.s3, plant.settings, output["manifest_uri"]
     )
+
+
+CHAIN = ["read", "filter", "aggregate"]
+
+
+async def finished_chain(plant: Plant) -> dict[str, Any]:
+    """Проводит `Read → Filter → Aggregate → Publish Dataset` до конца; отдаёт PipelineRun."""
+    run_id = await plant.start(new_read_filter_aggregate_pipeline)
+    for node_id in CHAIN:
+        await plant.execute(run_id, node_id)
+    await plant.orchestrator.publish_pending()
+    return await plant.api.run(run_id)
+
+
+async def test_multi_node_pipeline_publishes_one_version_from_last_block(plant: Plant) -> None:
+    run = await finished_chain(plant)
+
+    [version] = await plant.api.versions(UUID(run["outputs"]["result"]["dataset_id"]))
+    [output] = (await plant.node(run["pipeline_run_id"], "aggregate"))["outputs"]
+    assert run["state"] == "SUCCEEDED"
+    assert published_manifest(plant, run["outputs"]["result"]["dataset_id"], version) == (
+        read_object(plant.s3, plant.settings, output["manifest_uri"])
+    )
+
+
+async def test_intermediate_node_outputs_do_not_reach_catalog(plant: Plant) -> None:
+    run = await finished_chain(plant)
+
+    source = await plant.api.versions(UUID(run["inputs"]["source"]["dataset_id"]))
+    target = await plant.api.versions(UUID(run["outputs"]["result"]["dataset_id"]))
+    assert [v["version_id"] for v in source] == [run["inputs"]["source"]["version_id"]]
+    assert len(target) == 1
+
+
+async def test_downstream_receives_upstream_node_output_as_resolved_input(plant: Plant) -> None:
+    run_id = await plant.start(new_read_filter_aggregate_pipeline)
+    await plant.execute(run_id, "read")
+
+    command = await plant.submitted(run_id, "filter")
+
+    source = command.payload.context.inputs["source"]
+    read = await plant.node(run_id, "read")
+    [output] = read["outputs"]
+    assert source.source == NodeOutputRef(node_run_id=UUID(read["node_run_id"]), port="data")
+    assert source.manifest_uri == output["manifest_uri"]
+    assert source.format == "PARQUET"
 
 
 async def test_submit_execution_carries_resolved_csv_input(plant: Plant) -> None:

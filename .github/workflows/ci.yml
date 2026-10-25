@@ -23,3 +23,5 @@ jobs:
         run: uv run pytest tests/unit
       - name: Integration tests
         run: uv run pytest tests/integration
+      - name: Block tests на Spark
+        run: scripts/block-tests.sh

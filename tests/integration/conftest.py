@@ -2,7 +2,7 @@ import asyncio
 import base64
 import hashlib
 import socket
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 from uuid import UUID, uuid4
@@ -23,7 +23,7 @@ from e3.api.app import create_app, create_storage
 from e3.runs import ensure_topics
 from e3.settings import Settings
 from e3.shared.storage import ObjectStorage
-from tests.integration.graphs import block_spec, port, read_graph
+from tests.integration.graphs import block_spec, port, read_filter_aggregate_graph, read_graph
 
 pytestmark = pytest.mark.integration
 
@@ -265,20 +265,38 @@ def api(client: httpx.AsyncClient, settings: Settings) -> Api:
 RUN_CSV = b"id,name\n1,alpha\n2,beta\n"
 
 
-async def new_read_pipeline(api: Api) -> tuple[str, int]:
-    block = f"read-{uuid4().hex}"
-    registered = await api.register_block(block_spec(block, [port("source")], [port("data")]))
+PipelineMaker = Callable[["Api"], Awaitable[tuple[str, int]]]
+
+
+async def new_block(api: Api, kind: str, output: str) -> str:
+    name = f"{kind}-{uuid4().hex}"
+    registered = await api.register_block(block_spec(name, [port("source")], [port(output)]))
     assert registered.status_code == 201, registered.text
-    pipeline_id = await api.new_pipeline("read")
-    await api.save_draft(pipeline_id, read_graph(block))
+    return name
+
+
+async def publish_pipeline(api: Api, graph: dict[str, Any]) -> tuple[str, int]:
+    pipeline_id = await api.new_pipeline(f"pipeline-{uuid4()}")
+    await api.save_draft(pipeline_id, graph)
     published = await api.publish(pipeline_id)
     assert published.status_code == 201, published.text
     return str(pipeline_id), published.json()["version_number"]
 
 
-async def run_request(api: Api) -> dict[str, Any]:
-    """Тело `POST /pipeline-runs` для `source → Read → Publish Dataset(result)`."""
-    pipeline_id, version_number = await new_read_pipeline(api)
+async def new_read_pipeline(api: Api) -> tuple[str, int]:
+    return await publish_pipeline(api, read_graph(await new_block(api, "read", "data")))
+
+
+async def new_read_filter_aggregate_pipeline(api: Api) -> tuple[str, int]:
+    read = await new_block(api, "read", "data")
+    filter_block = await new_block(api, "filter", "result")
+    aggregate = await new_block(api, "aggregate", "result")
+    return await publish_pipeline(api, read_filter_aggregate_graph(read, filter_block, aggregate))
+
+
+async def run_request(api: Api, pipeline: PipelineMaker = new_read_pipeline) -> dict[str, Any]:
+    """Тело `POST /pipeline-runs` для пайплайна с Input Slot `source` и Output Slot `result`."""
+    pipeline_id, version_number = await pipeline(api)
     source = await api.new_dataset(f"source-{uuid4()}")
     uploaded = await api.upload_csv(source, RUN_CSV)
     assert uploaded.status_code == 200, uploaded.text

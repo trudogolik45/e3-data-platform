@@ -1,9 +1,12 @@
 """Fake Execution Controller: заменяет Spark в integration-тестах Control Plane.
 
 Живёт только в `tests/`: код продукта его не импортирует (закреплено `lint-imports`).
-Читает SubmitExecution из `commands.v1`, как блок `Read` превращает входной CSV
-в настоящий Parquet с manifest v1 в `staging/executions/{attempt_id}/` и только
-после записи отвечает событиями в `events.v1`. Тест сам решает, чем ответить:
+Читает SubmitExecution из `commands.v1` и пишет выход в
+`staging/executions/{attempt_id}/`: CSV на входе `source` превращает, как блок
+`Read`, в настоящий Parquet с manifest v1 на выходе `data`, а Parquet любого
+другого блока копирует как есть на выход `result`. Вычисления Filter и Aggregate
+он не повторяет: их проверяют тесты блоков на Spark. Только после записи отвечает
+событиями в `events.v1`. Тест сам решает, чем ответить:
 успехом, падением до записи или повторной доставкой события.
 """
 
@@ -86,17 +89,39 @@ class FakeExecutionController:
         return parse_command(message.value)
 
     def execute(self, command: SubmitExecution) -> ExecutionResult:
-        """Выполняет `Read`: CSV со входа `source` → Parquet и manifest на выходе `data`."""
+        """CSV на `source` → Parquet на `data`, как `Read`; Parquet → копия на `result`."""
         context = command.payload.context
-        columns = self._read_csv(context.inputs["source"])
-        manifest_key = write_parquet_output(
-            self._s3, self._bucket, self._key(f"{context.output_prefix}/data"), columns
-        )
+        source = context.inputs["source"]
+        if source.format == "CSV":
+            port, manifest_key = "data", self._read(source, f"{context.output_prefix}/data")
+        else:
+            port, manifest_key = "result", self._copy(source, f"{context.output_prefix}/result")
         return ExecutionResult(
             node_run_id=context.node_run_id,
             attempt_id=context.attempt_id,
-            outputs={"data": f"s3://{self._bucket}/{manifest_key}"},
+            outputs={port: f"s3://{self._bucket}/{manifest_key}"},
         )
+
+    def _read(self, source: ResolvedInput, output: str) -> str:
+        columns = self._read_csv(source)
+        return write_parquet_output(self._s3, self._bucket, self._key(output), columns)
+
+    def _copy(self, source: ResolvedInput, output: str) -> str:
+        """Копирует файлы и manifest входа под `output`; возвращает ключ manifest."""
+        manifest_key = self._key(source.manifest_uri)
+        manifest = self._get(manifest_key)
+        directory = manifest_key.rpartition("/")[0]
+        prefix = self._key(output)
+        for file in Manifest.model_validate_json(manifest).files:
+            data = self._get(f"{directory}/{file.path}")
+            self._s3.put_object(
+                Bucket=self._bucket,
+                Key=f"{prefix}/{file.path}",
+                Body=data,
+                ChecksumSHA256=file.checksum_sha256,
+            )
+        self._s3.put_object(Bucket=self._bucket, Key=f"{prefix}/manifest.json", Body=manifest)
+        return f"{prefix}/manifest.json"
 
     async def succeed(self, command: SubmitExecution) -> ExecutionSucceeded:
         """Пишет данные, затем шлёт `Started` и `Succeeded`."""

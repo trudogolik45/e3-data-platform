@@ -1,0 +1,31 @@
+# BlockSpec блока `Aggregate` для `e3-register-block`.
+# `executable_ref` подставляет сборка: digest образа из registry (см. scripts/e2e.sh).
+name: aggregate
+version: "1.0.0"
+runtime: spark
+inputs:
+  - { name: source, data_type: dataset }
+outputs:
+  - { name: result, data_type: dataset }
+parameters_schema:
+  type: object
+  required: [aggregations]
+  additionalProperties: false
+  properties:
+    # Пусто — одна строка на весь вход.
+    group_by:
+      type: array
+      uniqueItems: true
+      items: { type: string, minLength: 1 }
+    aggregations:
+      type: array
+      minItems: 1
+      items:
+        type: object
+        required: [column, function, as]
+        additionalProperties: false
+        properties:
+          column: { type: string, minLength: 1 }
+          function: { enum: [count, sum, min, max, avg] }
+          as: { type: string, minLength: 1 }
+executable_ref: "@EXECUTABLE_REF@"

@@ -6,7 +6,8 @@
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from jsonschema import Draft202012Validator, SchemaError
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from e3.shared.manifest import DataFormat, DataSchema
 
@@ -48,11 +49,14 @@ class ResolvedInput(BaseModel):
     source: DataRef = Field(description="Только для логов и lineage")
 
 
+DataType = Literal["dataset", "scalar", "artifact"]
+
+
 class PortSpec(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str = Field(min_length=1)
-    data_type: Literal["dataset", "scalar", "artifact"]
+    data_type: DataType
     required: bool = True
 
 
@@ -66,6 +70,16 @@ class BlockSpec(BaseModel):
     outputs: list[PortSpec]
     parameters_schema: dict[str, Any]
     executable_ref: str = Field(pattern=OCI_DIGEST_PATTERN, description="OCI image digest")
+
+    @field_validator("parameters_schema")
+    @classmethod
+    def _is_json_schema(cls, schema: dict[str, Any]) -> dict[str, Any]:
+        """`parameters` узлов проверяются по ней при публикации PipelineVersion."""
+        try:
+            Draft202012Validator.check_schema(schema)
+        except SchemaError as error:
+            raise ValueError(f"не JSON Schema Draft 2020-12: {error.message}") from None
+        return schema
 
 
 class ExecutionContext(BaseModel):

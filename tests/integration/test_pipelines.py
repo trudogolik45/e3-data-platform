@@ -18,11 +18,23 @@ from tests.integration.graphs import (
 pytestmark = pytest.mark.integration
 
 
+LIMIT_SCHEMA = {
+    "type": "object",
+    "properties": {"limit": {"type": "integer"}},
+    "additionalProperties": False,
+}
+
+
 @pytest.fixture
 async def filter_block(api: Api) -> str:
-    """Блок `source → result` и необязательный вход `hint`."""
+    """Блок `source → result`: необязательные `hint` и скалярный `threshold`, параметр `limit`."""
     name = f"filter-{uuid4().hex}"
-    spec = block_spec(name, [port("source"), port("hint", required=False)], [port("result")])
+    inputs = [
+        port("source"),
+        port("hint", required=False),
+        port("threshold", required=False, data_type="scalar"),
+    ]
+    spec = block_spec(name, inputs, [port("result")], parameters_schema=LIMIT_SCHEMA)
     response = await api.register_block(spec)
     assert response.status_code == 201, response.text
     return name
@@ -150,6 +162,34 @@ def with_duplicate_node_ids(block: str) -> Graph:
     return graph
 
 
+def with_incompatible_port_types(block: str) -> Graph:
+    graph = linear_graph(block)
+    graph["nodes"].append(block_node("again", block))
+    graph["edges"] += [
+        edge(slot("source"), at("again", "source")),
+        edge(at("filter", "result"), at("again", "threshold")),
+    ]
+    return graph
+
+
+def with_parameters_against_schema(block: str) -> Graph:
+    graph = linear_graph(block)
+    graph["nodes"][0] = block_node("filter", block, parameters={"limit": "many"})
+    return graph
+
+
+def with_output_slot_without_publish(block: str) -> Graph:
+    graph = linear_graph(block)
+    graph["output_slots"].append({"name": "orphan"})
+    return graph
+
+
+def with_unused_input_slot(block: str) -> Graph:
+    graph = linear_graph(block)
+    graph["input_slots"].append({"name": "extra"})
+    return graph
+
+
 @pytest.mark.parametrize(
     ("broken", "reason"),
     [
@@ -164,6 +204,10 @@ def with_duplicate_node_ids(block: str) -> Graph:
         (with_unconnected_publish, "data"),
         (with_two_publishes_to_one_output_slot, "result"),
         (with_duplicate_node_ids, "filter"),
+        (with_incompatible_port_types, "threshold"),
+        (with_parameters_against_schema, "limit"),
+        (with_output_slot_without_publish, "orphan"),
+        (with_unused_input_slot, "extra"),
     ],
 )
 async def test_invalid_draft_is_not_published(
@@ -178,6 +222,17 @@ async def test_invalid_draft_is_not_published(
     assert response.status_code == 422
     assert reason in response.json()["detail"]
     await assert_no_versions(api, pipeline_id)
+
+
+async def test_draft_with_valid_parameters_is_published(api: Api, filter_block: str) -> None:
+    pipeline_id = await api.new_pipeline("sales")
+    graph = linear_graph(filter_block)
+    graph["nodes"][0] = block_node("filter", filter_block, parameters={"limit": 10})
+    await api.save_draft(pipeline_id, graph)
+
+    response = await api.publish(pipeline_id)
+
+    assert response.status_code == 201, response.text
 
 
 async def assert_no_versions(api: Api, pipeline_id: UUID) -> None:
