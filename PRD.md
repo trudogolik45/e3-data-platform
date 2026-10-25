@@ -425,6 +425,6 @@ ML model registry, feature pipelines, vLLM, inference endpoints, AI agents.
 
 ## 11. Архитектурные решения и acceptance test
 
-Решения записаны в `docs/adr/`: 0001 — Control Plane и Execution Plane, 0002 — публикация через `Publish Dataset`, 0003 — одна активная попытка на NodeRun. Термины — в `GLOSSARY.md`.
+Решения записаны в `docs/adr/`: 0001 — Control Plane и Execution Plane, 0002 — публикация через `Publish Dataset`, 0003 — одна активная попытка на NodeRun, 0004 — Membership в Control Plane и повторная проверка прав при публикации. Термины — в `GLOSSARY.md`.
 
 Первый acceptance test: загрузить CSV → создать DAG `Read → Filter → Aggregate → Publish Dataset` → выполнить на Spark → сохранить Parquet → зарегистрировать новую версию датасета → получить статус и результат через API. Повторный запуск и перезапуск сервисов не должны приводить к дублированию опубликованных результатов или потере состояния.
