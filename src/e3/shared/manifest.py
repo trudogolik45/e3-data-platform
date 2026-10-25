@@ -5,13 +5,14 @@ from typing import Literal
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 DataFormat = Literal["CSV", "PARQUET"]
+ColumnType = Literal["string", "long", "double"]
 
 
 class Column(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str
-    type: Literal["string"]
+    type: ColumnType
 
 
 class DataSchema(BaseModel):

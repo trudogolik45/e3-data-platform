@@ -34,6 +34,16 @@ async def test_platform_team_registers_block(api: Api) -> None:
     assert response.json() == spec
 
 
+async def test_block_with_invalid_parameters_schema_is_not_registered(api: Api) -> None:
+    spec = block_spec(parameters_schema={"type": "no-such-type"})
+
+    response = await api.register_block(spec)
+
+    assert response.status_code == 422
+    assert "parameters_schema" in response.text
+    assert spec["name"] not in await registered_names(api)
+
+
 @pytest.mark.parametrize(
     ("token", "status_code"),
     [(None, 401), ("wrong-token", 403), ("user-token-from-dev-login", 403)],

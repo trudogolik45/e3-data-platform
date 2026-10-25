@@ -10,6 +10,7 @@ from e3.shared.contracts import (
     DatasetVersionRef,
     NodeOutputRef,
 )
+from e3.shared.manifest import Column
 from e3.shared.schemas import json_schemas
 
 DIGEST = "registry.local/e3/read@sha256:" + "a" * 64
@@ -67,6 +68,23 @@ def test_block_spec_rejects_anything_but_digest(ref: str) -> None:
 def test_block_spec_supports_only_spark_runtime() -> None:
     with pytest.raises(ValidationError, match="runtime"):
         BlockSpec.model_validate(block_spec(runtime="python"))
+
+
+def test_block_spec_rejects_invalid_parameters_schema() -> None:
+    with pytest.raises(ValidationError, match="parameters_schema"):
+        BlockSpec.model_validate(block_spec(parameters_schema={"type": "no-such-type"}))
+
+
+@pytest.mark.parametrize("column_type", ["string", "long", "double"])
+def test_manifest_column_carries_real_type(column_type: str) -> None:
+    column = Column.model_validate({"name": "amount", "type": column_type})
+
+    assert column.type == column_type
+
+
+def test_manifest_column_rejects_unknown_type() -> None:
+    with pytest.raises(ValidationError, match="type"):
+        Column.model_validate({"name": "amount", "type": "decimal"})
 
 
 def test_json_schema_covers_all_contracts() -> None:

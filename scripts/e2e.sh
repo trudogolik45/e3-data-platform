@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# E2E `Read → Publish Dataset` на настоящем Spark (kind + Kubeflow Spark Operator).
+# E2E `Read → Filter → Aggregate → Publish Dataset` на настоящем Spark
+# (kind + Kubeflow Spark Operator).
 #
 # Поднимает kind с локальным OCI registry и Spark Operator, Control Plane через
-# docker compose, собирает и пушит образ `Read`, регистрирует его digest через
+# docker compose, собирает и пушит образы блоков, регистрирует их digest через
 # `e3-register-block`, запускает `e3-execution-controller` и гоняет tests/e2e.
 # В конце всё разбирает; E3_E2E_KEEP=1 оставляет стенд для отладки.
 #
@@ -19,7 +20,7 @@ SPARK_OPERATOR_VERSION=2.5.2
 CLUSTER=e3-e2e
 REGISTRY=e3-kind-registry
 REGISTRY_PORT=5001 # 5000 на macOS занят AirPlay
-IMAGE="localhost:$REGISTRY_PORT/e3-read:e2e"
+BLOCKS=(read filter aggregate)
 PLATFORM_TOKEN=dev-platform-token # E3_PLATFORM_TOKEN сервиса api в docker-compose.yml
 
 export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
@@ -139,15 +140,15 @@ start_control_plane() {
     --dry-run=client -o yaml | kubectl apply -f -
 }
 
-register_read_block() {
-  log "образ Read → $IMAGE"
-  docker build -q -f "$ROOT/blocks/read/Dockerfile" -t "$IMAGE" "$ROOT" >/dev/null
-  docker push -q "$IMAGE" >/dev/null
-  local digest
-  digest=$(docker inspect -f '{{index .RepoDigests 0}}' "$IMAGE")
-  sed "s|@EXECUTABLE_REF@|$digest|" "$ROOT/blocks/read/block.yaml" >"$WORK/read.yaml"
+register_block() {
+  local block=$1 image="localhost:$REGISTRY_PORT/e3-$1:e2e" digest
+  log "образ $block → $image"
+  docker build -q -f "$ROOT/blocks/Dockerfile" --build-arg "BLOCK=$block" -t "$image" "$ROOT" >/dev/null
+  docker push -q "$image" >/dev/null
+  digest=$(docker inspect -f '{{index .RepoDigests 0}}' "$image")
+  sed "s|@EXECUTABLE_REF@|$digest|" "$ROOT/blocks/$block/block.yaml" >"$WORK/$block.yaml"
   E3_API_URL=http://localhost:8000 E3_PLATFORM_TOKEN=$PLATFORM_TOKEN \
-    uv run --project "$ROOT" e3-register-block "$WORK/read.yaml"
+    uv run --project "$ROOT" e3-register-block "$WORK/$block.yaml"
 }
 
 controller_env() {
@@ -171,10 +172,10 @@ main() {
   create_cluster
   install_spark_operator
   start_control_plane
-  register_read_block
+  for block in "${BLOCKS[@]}"; do register_block "$block"; done
   controller_env
   start_controller
-  log "E2E: Read → Publish Dataset"
+  log "E2E: Read → Filter → Aggregate → Publish Dataset"
   E3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
 }
 
