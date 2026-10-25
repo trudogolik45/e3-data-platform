@@ -45,14 +45,15 @@ async def test_first_sign_in_creates_user_and_next_one_reuses_it(
     identity: IdentityService,
 ) -> None:
     subject = uuid4().hex
-    first = await identity.sign_in(person(subject, email="old@e3.test"))
+    old, new = f"old-{subject}@e3.test", f"new-{subject}@e3.test"
+    first = await identity.sign_in(person(subject, email=old))
 
-    again = await identity.sign_in(person(subject, email="new@e3.test"))
+    again = await identity.sign_in(person(subject, email=new))
 
     assert again == first
-    assert await identity.find_user(email="new@e3.test") == first
+    assert await identity.find_user(email=new) == first
     with pytest.raises(UserNotFound):
-        await identity.find_user(email="old@e3.test")
+        await identity.find_user(email=old)
 
 
 async def test_same_subject_from_another_issuer_is_another_user(

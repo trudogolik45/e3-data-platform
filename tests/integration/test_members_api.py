@@ -19,9 +19,9 @@ async def me(world: World, token: str) -> dict[str, object]:
 
 async def test_next_sign_in_with_another_email_is_the_same_user(world: World) -> None:
     subject = uuid4().hex
-    first = await me(world, world.oidc.token(subject, email="old@e3.test"))
+    first = await me(world, world.oidc.token(subject, email=f"old-{subject}@e3.test"))
 
-    again = await me(world, world.oidc.token(subject, email="new@e3.test"))
+    again = await me(world, world.oidc.token(subject, email=f"new-{subject}@e3.test"))
 
     assert again["user_id"] == first["user_id"]
 
