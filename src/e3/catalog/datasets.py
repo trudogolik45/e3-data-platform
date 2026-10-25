@@ -55,10 +55,7 @@ async def get_dataset(session: AsyncSession, dataset_id: UUID) -> Dataset:
 
 
 async def lock_datasets(session: AsyncSession, dataset_ids: Iterable[UUID]) -> dict[UUID, Dataset]:
-    """Блокирует строки на чтение до конца транзакции: архивация ждёт её конца.
-
-    Строки берутся по возрастанию id, чтобы встречные блокировки не сцепились.
-    """
+    """Блокирует строки на чтение по возрастанию id до конца транзакции: архивация ждёт её."""
     rows = await session.scalars(
         select(DatasetRow)
         .where(DatasetRow.id.in_(set(dataset_ids)))

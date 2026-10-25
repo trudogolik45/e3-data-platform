@@ -1,17 +1,32 @@
 """Архивирование Dataset и Pipeline: из обращения уходят, уже созданные запуски работают."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
+from e3.api.app import create_app
 from e3.settings import Settings
-from tests.integration.conftest import RUN_CSV, Api, Plant, run_request
-from tests.integration.test_slot_defaults import pipeline_with_defaults, uploaded_version
+from tests.integration.conftest import (
+    RUN_CSV,
+    Api,
+    Plant,
+    pipeline_with_defaults,
+    run_request,
+    uploaded_version,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -133,32 +148,59 @@ async def test_run_created_before_archiving_still_publishes(plant: Plant) -> Non
     assert len(await plant.api.versions(UUID(target))) == 1
 
 
-async def wait_for_lock_or_done(engine: AsyncEngine, task: asyncio.Task[Any]) -> None:
-    """Ждёт, пока `task` встанет в очередь на блокировку строки или закончится."""
-    query = text(
-        "SELECT count(*) FROM pg_stat_activity"
-        " WHERE wait_event_type = 'Lock' AND datname = current_database()"
-    )
+async def backend_pid(connection: AsyncConnection | AsyncSession) -> int:
+    pid = await connection.scalar(text("SELECT pg_backend_pid()"))
+    assert pid is not None
+    return pid
+
+
+async def wait_until_blocked(engine: AsyncEngine, holder: int, task: asyncio.Future[Any]) -> None:
+    """Ждёт, пока `task` встанет в очередь за блокировкой `holder` или закончится."""
+    query = text("SELECT count(*) FROM pg_stat_activity WHERE :holder = ANY(pg_blocking_pids(pid))")
     for _ in range(LOCK_WAIT_POLLS):
         async with engine.connect() as probe:
-            if task.done() or await probe.scalar(query):
+            if task.done() or await probe.scalar(query, {"holder": holder}):
                 return
         await asyncio.sleep(0.05)
-    raise TimeoutError("запуск не дошёл ни до блокировки, ни до ответа")
+    raise TimeoutError("запрос не встал за блокировкой и не ответил")
 
 
 async def start_during_archiving(
-    api: Api, settings: Settings, body: dict[str, Any], archive_sql: str, row_id: str
+    api: Api, settings: Settings, body: dict[str, Any], table: str, row_id: str
 ) -> httpx.Response:
     """Создаёт запуск, пока архивация строки `row_id` идёт в открытой транзакции."""
     engine = create_async_engine(settings.database_url)
     try:
         async with engine.connect() as archiving:
-            await archiving.execute(text(archive_sql), {"id": row_id})
+            await archiving.execute(
+                text(f"UPDATE {table} SET archived = true WHERE id = :id"), {"id": row_id}
+            )
             start = asyncio.create_task(api.start_run(body, key=str(uuid4())))
-            await wait_for_lock_or_done(engine, start)
+            await wait_until_blocked(engine, await backend_pid(archiving), start)
             await archiving.commit()
         return await start
+    finally:
+        await engine.dispose()
+
+
+RunLock = Callable[[FastAPI, AsyncSession], Awaitable[object]]
+
+
+async def archive_during_run_creation(
+    settings: Settings, lock: RunLock, archive: Awaitable[httpx.Response]
+) -> tuple[bool, httpx.Response]:
+    """Архивирует, пока транзакция создания запуска держит блокировку `lock`.
+
+    Возвращает, успела ли архивация закончиться до конца той транзакции, и её ответ.
+    """
+    engine = create_async_engine(settings.database_url)
+    try:
+        async with async_sessionmaker(engine).begin() as creating:
+            await lock(create_app(settings), creating)
+            archiving = asyncio.ensure_future(archive)
+            await wait_until_blocked(engine, await backend_pid(creating), archiving)
+            finished_early = archiving.done()
+        return finished_early, await archiving
     finally:
         await engine.dispose()
 
@@ -170,13 +212,7 @@ async def test_run_racing_dataset_archiving_is_rejected(
     body = await run_request(api)
     dataset_id = next(iter(body[slot].values()))["dataset_id"]
 
-    response = await start_during_archiving(
-        api,
-        settings,
-        body,
-        "UPDATE catalog.datasets SET archived = true WHERE id = :id",
-        dataset_id,
-    )
+    response = await start_during_archiving(api, settings, body, "catalog.datasets", dataset_id)
 
     assert response.status_code == 422, response.text
     assert "в архиве" in response.json()["detail"]
@@ -186,14 +222,38 @@ async def test_run_racing_pipeline_archiving_is_conflict(api: Api, settings: Set
     body = await run_request(api)
 
     response = await start_during_archiving(
-        api,
-        settings,
-        body,
-        "UPDATE pipelines.pipelines SET archived = true WHERE id = :id",
-        body["pipeline_id"],
+        api, settings, body, "pipelines.pipelines", body["pipeline_id"]
     )
 
     assert response.status_code == 409, response.text
+
+
+async def test_dataset_archiving_waits_for_run_creation(api: Api, settings: Settings) -> None:
+    dataset_id = await api.new_dataset(f"sales-{uuid4()}")
+
+    async def lock(app: FastAPI, session: AsyncSession) -> object:
+        return await app.state.catalog.lock_datasets(session, [dataset_id])
+
+    finished_early, archived = await archive_during_run_creation(
+        settings, lock, api.archive_dataset(dataset_id)
+    )
+
+    assert not finished_early
+    assert archived.status_code == 200, archived.text
+
+
+async def test_pipeline_archiving_waits_for_run_creation(api: Api, settings: Settings) -> None:
+    pipeline_id = await api.new_pipeline(f"pipeline-{uuid4()}")
+
+    async def lock(app: FastAPI, session: AsyncSession) -> object:
+        return await app.state.pipelines.lock(session, pipeline_id)
+
+    finished_early, archived = await archive_during_run_creation(
+        settings, lock, api.archive_pipeline(pipeline_id)
+    )
+
+    assert not finished_early
+    assert archived.status_code == 200, archived.text
 
 
 async def test_repeated_run_after_archiving_returns_original(api: Api) -> None:
