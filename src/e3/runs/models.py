@@ -32,6 +32,8 @@ class PipelineRunRow(Base):
     idempotency_key: Mapped[str]
     request_hash: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Initiator: его Membership перепроверяется перед каждой Publication (ADR-0004).
+    initiated_by_user_id: Mapped[UUID]
     # Первый NodeRun, ушедший в FAILED: первопричина Fail-fast.
     failed_node_run_id: Mapped[UUID | None]
 

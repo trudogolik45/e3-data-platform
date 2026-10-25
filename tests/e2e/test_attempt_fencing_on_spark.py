@@ -29,7 +29,6 @@ from e3.execution.workload import (
     is_fence,
     workload_name,
 )
-from e3.settings import Settings
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
     ExecutionEvent,
@@ -38,6 +37,7 @@ from e3.shared.messages import (
     parse_command,
     reconcile,
 )
+from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_graph
 
@@ -126,7 +126,7 @@ async def test_vanished_attempt_is_fenced_then_retried_to_success(
     applications, controller = cluster
     assert API_URL is not None
     async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
-        api = Api(client, Settings.model_fields["dev_project_id"].default)
+        api = await project_api(client)
         run_id = await _start(api)
         first = await eventually(lambda: _read(api, run_id), lambda n: n["state"] == "RUNNING")
         first_id = UUID(first["attempt_id"])
@@ -159,7 +159,7 @@ async def test_cancel_mid_spark_replaces_attempt_with_fence_and_ends_cancelled(
     applications, _ = cluster
     assert API_URL is not None
     async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
-        api = Api(client, Settings.model_fields["dev_project_id"].default)
+        api = await project_api(client)
         run_id = await _start(api)
         node = await eventually(lambda: _read(api, run_id), lambda n: n["state"] == "RUNNING")
         attempt_id = UUID(node["attempt_id"])

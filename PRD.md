@@ -251,6 +251,13 @@ class ExecutionResult(BaseModel):
 | `GET`  | `/api/v1/pipeline-runs/{id}`                         | Статус выполнения              |
 | `GET`  | `/api/v1/pipeline-runs/{id}/nodes`                   | Состояния узлов                |
 | `POST` | `/api/v1/pipeline-runs/{id}/cancel`                  | Запросить отмену               |
+| `GET`  | `/api/v1/me`                                         | Кто я и мои роли в Project     |
+| `POST` | `/api/v1/organizations`                              | Создать Organization (admin, только команда платформы) |
+| `POST` | `/api/v1/projects`                                   | Создать Project с первым Admin (admin, только команда платформы) |
+| `GET`  | `/api/v1/projects/{id}/members`                      | Участники Project              |
+| `POST` | `/api/v1/projects/{id}/members`                      | Добавить участника (Admin)     |
+| `PUT`  | `/api/v1/projects/{id}/members/{user_id}`            | Сменить Role (Admin)           |
+| `DELETE` | `/api/v1/projects/{id}/members/{user_id}`          | Убрать участника (Admin)       |
 
 Запуск DAG:
 
@@ -294,6 +301,8 @@ Idempotency-Key: run-request-001
 Физического удаления нет: Dataset и Pipeline только архивируются. Архивирование идемпотентно и необратимо в MVP. Upload в архивный Dataset, сохранение Draft и публикация версии архивного Pipeline — `409`.
 
 Роли проекта: `Viewer`, `Editor`, `Admin`. ACL на отдельные датасеты — следующая итерация.
+
+Каждый запрос несёт `Authorization: Bearer <JWT>` OIDC-провайдера: нет токена или он не прошёл проверку — `401`, нет Membership с нужной Role — `403`. `Viewer` читает, `Editor` ещё создаёт и меняет датасеты и пайплайны, запускает и отменяет запуски, `Admin` ещё ведёт участников. Для запуска нужен `Editor` в Project пайплайна, `Viewer` в Project каждого входа и `Editor` в Project каждого выхода. Перед публикацией права Initiator проверяются заново: если `Editor` у него больше нет, `Publish Dataset` уходит в `FAILED` с `access_revoked` (ADR-0004). Участника добавляют по `user_id` или подтверждённому email, только если он уже входил; последнего Admin убрать или понизить нельзя — `409`.
 
 Для загрузки файлов API выдаёт presigned S3 URL. Содержимое файла не проходит через FastAPI.
 
@@ -429,6 +438,6 @@ ML model registry, feature pipelines, vLLM, inference endpoints, AI agents.
 
 ## 11. Архитектурные решения и acceptance test
 
-Решения записаны в `docs/adr/`: 0001 — Control Plane и Execution Plane, 0002 — публикация через `Publish Dataset`, 0003 — одна активная попытка на NodeRun. Термины — в `GLOSSARY.md`.
+Решения записаны в `docs/adr/`: 0001 — Control Plane и Execution Plane, 0002 — публикация через `Publish Dataset`, 0003 — одна активная попытка на NodeRun, 0004 — Membership в Control Plane и повторная проверка прав при публикации. Термины — в `GLOSSARY.md`.
 
 Первый acceptance test: загрузить CSV → создать DAG `Read → Filter → Aggregate → Publish Dataset` → выполнить на Spark → сохранить Parquet → зарегистрировать новую версию датасета → получить статус и результат через API. Повторный запуск и перезапуск сервисов не должны приводить к дублированию опубликованных результатов или потере состояния.

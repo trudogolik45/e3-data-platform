@@ -13,7 +13,7 @@ from e3.catalog.catalog import Catalog
 from e3.catalog.datasets import Dataset, DatasetNameTaken, DatasetNotFound
 from e3.catalog.uploads import FileNotUploaded, UploadNotFound, UploadState, UploadStatus
 from e3.catalog.versions import DatasetVersion
-from e3.identity import Principal, ProjectAccessDenied, authorize_project, current_principal
+from e3.identity import Principal, ProjectAccessDenied, Role, authorize, current_principal
 from e3.shared.manifest import DataFormat, DataSchema
 from e3.shared.storage import StorageUnavailable
 
@@ -102,7 +102,7 @@ PrincipalDep = Annotated[Principal, Depends(current_principal)]
 async def create_dataset(
     body: CreateDatasetIn, catalog: CatalogDep, principal: PrincipalDep
 ) -> DatasetOut:
-    _authorize(principal, body.project_id)
+    _authorize(principal, body.project_id, Role.EDITOR)
     try:
         dataset = await catalog.create_dataset(project_id=body.project_id, name=body.name)
     except DatasetNameTaken:
@@ -114,7 +114,7 @@ async def create_dataset(
 async def archive_dataset(
     dataset_id: UUID, catalog: CatalogDep, principal: PrincipalDep
 ) -> DatasetOut:
-    await _accessible_dataset(catalog, principal, dataset_id)
+    await _accessible_dataset(catalog, principal, dataset_id, Role.EDITOR)
     return _dataset_out(await catalog.archive_dataset(dataset_id))
 
 
@@ -162,28 +162,30 @@ async def complete_upload(
 async def list_versions(
     dataset_id: UUID, catalog: CatalogDep, principal: PrincipalDep
 ) -> list[DatasetVersionOut]:
-    await _accessible_dataset(catalog, principal, dataset_id)
+    await _accessible_dataset(catalog, principal, dataset_id, Role.VIEWER)
     return [_version_out(version) for version in await catalog.list_versions(dataset_id)]
 
 
-async def _accessible_dataset(catalog: Catalog, principal: Principal, dataset_id: UUID) -> Dataset:
+async def _accessible_dataset(
+    catalog: Catalog, principal: Principal, dataset_id: UUID, minimum: Role
+) -> Dataset:
     try:
         dataset = await catalog.get_dataset(dataset_id)
     except DatasetNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dataset не найден") from None
-    _authorize(principal, dataset.project_id)
+    _authorize(principal, dataset.project_id, minimum)
     return dataset
 
 
 async def _uploadable_dataset(catalog: Catalog, principal: Principal, dataset_id: UUID) -> None:
-    dataset = await _accessible_dataset(catalog, principal, dataset_id)
+    dataset = await _accessible_dataset(catalog, principal, dataset_id, Role.EDITOR)
     if dataset.archived:
         raise HTTPException(status.HTTP_409_CONFLICT, "Dataset в архиве")
 
 
-def _authorize(principal: Principal, project_id: UUID) -> None:
+def _authorize(principal: Principal, project_id: UUID, minimum: Role) -> None:
     try:
-        authorize_project(principal, project_id)
+        authorize(principal, project_id, minimum)
     except ProjectAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
 

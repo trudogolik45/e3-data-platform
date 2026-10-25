@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from e3 import catalog
 from e3.blocks import BlockRegistry
-from e3.identity import Principal, authorize_project
+from e3.identity import IdentityService, Principal, Role, authorize
 from e3.pipelines import (
     PUBLISH_INPUT_PORT,
     BlockRef,
@@ -91,6 +91,8 @@ AWAITING_OUTCOME = frozenset({NodeState.QUEUED, NodeState.RUNNING})
 OPEN_ATTEMPT = AWAITING_OUTCOME | {NodeState.CANCELLING}
 # Запуск закончился: отменять нечего.
 FINISHED = frozenset({RunState.SUCCEEDED, RunState.FAILED})
+# Терминальная причина Publish Dataset без ретрая: дальше Fail-fast.
+ACCESS_REVOKED = "access_revoked: у Initiator нет Role Editor в Project целевого Dataset"
 
 
 class PipelineRunNotFound(Exception):
@@ -115,6 +117,7 @@ class PipelineRun:
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
     created_at: datetime
+    initiated_by_user_id: UUID
     failed_node_run_id: UUID | None
 
 
@@ -163,6 +166,7 @@ class RunOrchestrator:
         pipelines: PipelineService,
         blocks: BlockRegistry,
         storage: ObjectStorage,
+        identity: IdentityService,
         reconcile_after: timedelta,
     ) -> None:
         self._sessions = sessions
@@ -170,6 +174,7 @@ class RunOrchestrator:
         self._pipelines = pipelines
         self._blocks = blocks
         self._storage = storage
+        self._identity = identity
         self._reconcile_after = reconcile_after
 
     async def start(
@@ -177,7 +182,7 @@ class RunOrchestrator:
     ) -> PipelineRun:
         """Создаёт PipelineRun; повтор с тем же ключом и телом отдаёт уже созданный."""
         pipeline = await self._pipelines.get(request.pipeline_id)
-        authorize_project(principal, pipeline.project_id)
+        authorize(principal, pipeline.project_id, Role.EDITOR)
         async with self._sessions() as session:
             existing = await _find_by_key(session, pipeline.project_id, idempotency_key)
         if existing is not None:
@@ -197,7 +202,13 @@ class RunOrchestrator:
         )
         specs = await self._specs(version.graph)
         return await self._create(
-            pipeline.project_id, version.graph, request, bindings, idempotency_key, specs
+            pipeline.project_id,
+            principal.user_id,
+            version.graph,
+            request,
+            bindings,
+            idempotency_key,
+            specs,
         )
 
     def outbox_relay(self, publisher: Publisher) -> OutboxRelay:
@@ -339,6 +350,7 @@ class RunOrchestrator:
     async def _create(
         self,
         project_id: UUID,
+        initiator: UUID,
         graph: PipelineGraph,
         request: RunRequest,
         bindings: Bindings,
@@ -362,6 +374,7 @@ class RunOrchestrator:
                     outputs=_dump(bindings.outputs),
                     idempotency_key=idempotency_key,
                     request_hash=request.fingerprint(),
+                    initiated_by_user_id=initiator,
                 )
                 .on_conflict_do_nothing(index_elements=["project_id", "idempotency_key"])
                 .returning(PipelineRunRow.id)
@@ -544,6 +557,9 @@ class RunOrchestrator:
         if publication is None:
             await self._transition(node_run_id, NodeState.RUNNING, _failed("нет NodeOutput"))
             return
+        if not await self._initiator_may_publish(publication):
+            await self._transition(node_run_id, NodeState.RUNNING, _failed(ACCESS_REVOKED))
+            return
         try:
             version = await self._datasets.publish(
                 project_id=publication.project_id,
@@ -555,6 +571,14 @@ class RunOrchestrator:
             await self._transition(node_run_id, NodeState.RUNNING, _failed(str(error)))
             return
         await self._transition(node_run_id, NodeState.RUNNING, _published(version.version_id))
+
+    async def _initiator_may_publish(self, publication: "_Publication") -> bool:
+        """Текущий Membership Initiator, а не права на момент запуска (ADR-0004)."""
+        try:
+            dataset = await self._datasets.get_dataset(publication.dataset_id)
+        except catalog.DatasetNotFound:
+            return True  # отказ с причиной даст сама публикация
+        return await self._identity.has_role(publication.initiator, dataset.project_id, Role.EDITOR)
 
     async def _publication(self, node_run_id: UUID) -> "_Publication | None":
         """Что публикует узел Publish Dataset; `None` — входа NodeOutput нет."""
@@ -569,7 +593,13 @@ class RunOrchestrator:
             run = await session.get_one(PipelineRunRow, node.pipeline_run_id)
         if node.target_dataset_id is None:
             raise RuntimeError(f"у Publish Dataset NodeRun {node.id} нет целевого Dataset")
-        return _Publication(run.project_id, node.target_dataset_id, source, output.manifest_uri)
+        return _Publication(
+            run.project_id,
+            run.initiated_by_user_id,
+            node.target_dataset_id,
+            source,
+            output.manifest_uri,
+        )
 
     async def _transition(self, node_run_id: UUID, expected: NodeState, change: NodeChange) -> None:
         """Меняет NodeRun, если он всё ещё в `expected`, и продвигает запуск."""
@@ -594,6 +624,7 @@ class RunOrchestrator:
 @dataclass(frozen=True)
 class _Publication:
     project_id: UUID
+    initiator: UUID
     dataset_id: UUID
     source: NodeOutputRef
     manifest_uri: str
@@ -776,6 +807,7 @@ def _to_run(row: PipelineRunRow) -> PipelineRun:
         inputs={slot: InputBinding.model_validate(b) for slot, b in row.inputs.items()},
         outputs={slot: OutputBinding.model_validate(b) for slot, b in row.outputs.items()},
         created_at=row.created_at,
+        initiated_by_user_id=row.initiated_by_user_id,
         failed_node_run_id=row.failed_node_run_id,
     )
 

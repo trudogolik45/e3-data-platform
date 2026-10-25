@@ -28,6 +28,7 @@ from e3.settings import Settings
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.manifest import Manifest
 from e3.shared.messages import ExecutionEvent, parse_command
+from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_filter_aggregate_graph
 
@@ -102,7 +103,7 @@ def follows(observed: list[str], chain: list[str], lasting: frozenset[str] = fro
 async def finished() -> AsyncIterator[FinishedRun]:
     assert API_URL is not None
     async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
-        api = Api(client, Settings.model_fields["dev_project_id"].default)
+        api = await project_api(client)
         run_id = await _start(api)
         trace = await _follow(api, run_id)
         yield FinishedRun(api, await api.run(run_id), await api.run_nodes(run_id), trace)

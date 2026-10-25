@@ -2,17 +2,16 @@
 
 from uuid import UUID, uuid4
 
-import httpx
 import pytest
 
 from e3.api.app import create_app
 from e3.catalog import Catalog
-from e3.identity import Principal
 from e3.settings import Settings
 from e3.shared.contracts import DatasetVersionRef
 from tests.integration.conftest import (
     Api,
     Plant,
+    World,
     pipeline_with_defaults,
     publish_defaults,
     uploaded_version,
@@ -86,28 +85,19 @@ async def test_request_binding_overrides_default(api: Api) -> None:
     assert response.json()["inputs"] == override
 
 
-async def test_explicit_input_from_readable_foreign_project_is_accepted(
-    settings: Settings,
-) -> None:
-    foreign_project = uuid4()
-    app = create_app(settings)
-    app.state.principal = Principal(
-        settings.dev_user_id,
-        settings.dev_organization_id,
-        {settings.dev_project_id: "Admin", foreign_project: "Viewer"},
-    )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://e3"
-    ) as client:
-        api = Api(client, settings.dev_project_id)
-        created = await api.create_dataset(f"f-{uuid4()}", project_id=foreign_project)
-        foreign = UUID(created.json()["dataset_id"])
-        foreign_version = await uploaded_version(api, foreign)
-        target = await api.new_dataset(f"r-{uuid4()}")
-        body = await pipeline_with_defaults(api, None, {"dataset_id": str(target)})
-        binding = {"source": {"dataset_id": str(foreign), "version_id": foreign_version}}
+async def test_explicit_input_from_readable_foreign_project_is_accepted(world: World) -> None:
+    user, foreign_admin = await world.user(), await world.user()
+    home_id, foreign_id = await world.project(user), await world.project(foreign_admin)
+    foreign_api = await world.api(foreign_admin, foreign_id)
+    foreign = await foreign_api.new_dataset(f"f-{uuid4()}")
+    foreign_version = await uploaded_version(foreign_api, foreign)
+    await world.grant(foreign_id, foreign_admin, user, "Viewer")
+    api = await world.api(user, home_id)
+    target = await api.new_dataset(f"r-{uuid4()}")
+    body = await pipeline_with_defaults(api, None, {"dataset_id": str(target)})
+    binding = {"source": {"dataset_id": str(foreign), "version_id": foreign_version}}
 
-        response = await api.start_run(body | {"inputs": binding}, key=str(uuid4()))
+    response = await api.start_run(body | {"inputs": binding}, key=str(uuid4()))
 
     assert response.status_code == 202, response.text
     assert response.json()["inputs"] == binding

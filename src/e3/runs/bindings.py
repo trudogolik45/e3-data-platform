@@ -16,7 +16,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 from e3 import catalog
-from e3.identity import Principal, authorize_project
+from e3.identity import Principal, Role, authorize
 from e3.pipelines import ExactVersion, LatestVersion, PipelineGraph, TargetDataset
 
 
@@ -133,7 +133,7 @@ async def _check_input(
     if version.dataset_id != binding.dataset_id:
         raise RunRequestInvalid(f"Input Slot {slot}: DatasetVersion из другого Dataset")
     dataset = await datasets.get_dataset(binding.dataset_id)
-    authorize_project(principal, dataset.project_id)
+    authorize(principal, dataset.project_id, Role.VIEWER)
 
 
 async def _check_output(
@@ -147,6 +147,7 @@ async def _check_output(
         dataset = await datasets.get_dataset(binding.dataset_id)
     except catalog.DatasetNotFound:
         raise RunRequestInvalid(f"Output Slot {slot}: нет Dataset") from None
-    authorize_project(principal, dataset.project_id)
+    # Запись разрешает Role в Project целевого Dataset, а не место запуска.
+    authorize(principal, dataset.project_id, Role.EDITOR)
     if dataset.project_id != project_id:
         raise RunRequestInvalid(f"Output Slot {slot}: Dataset из другого Project")

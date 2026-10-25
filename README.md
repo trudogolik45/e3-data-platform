@@ -63,6 +63,21 @@ docker compose up -d --build   # API на :8000, MinIO на :9000, Kafka на :9
 
 Документация API — http://localhost:8000/docs.
 
+Вход — через локальный OIDC-провайдер `mock-oauth2-server` на :8080: он выдаёт токен любому
+`client_id`. Organization и Project создаёт команда платформы токеном `E3_PLATFORM_TOKEN`
+(локально `dev-platform-token`), первым Admin становится уже входивший пользователь:
+
+```sh
+TOKEN=$(curl -s localhost:8080/e3/token -d grant_type=client_credentials -d client_id=alice \
+  -d client_secret=x | jq -r .access_token)
+curl -s localhost:8000/api/v1/me -H "Authorization: Bearer $TOKEN"     # первый вход создаёт User
+ORG=$(curl -s localhost:8000/api/v1/organizations -H "Authorization: Bearer dev-platform-token" \
+  -H 'Content-Type: application/json' -d '{"name":"demo"}' | jq -r .organization_id)
+curl -s localhost:8000/api/v1/projects -H "Authorization: Bearer dev-platform-token" \
+  -H 'Content-Type: application/json' \
+  -d "{\"organization_id\":\"$ORG\",\"name\":\"demo\",\"admin\":{\"email\":\"alice@e3.local\"}}"
+```
+
 ## Проверки
 
 ```sh
