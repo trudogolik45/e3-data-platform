@@ -10,6 +10,7 @@ from e3.execution.workload import (
     FENCED_LABEL,
     Pod,
     WorkloadConfig,
+    spark_application,
 )
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
@@ -375,3 +376,17 @@ async def test_cancel_of_finished_attempt_reports_its_real_outcome() -> None:
 
     assert FENCED_LABEL not in applications.items[name(submit)]["metadata"]["labels"]
     assert [event.type for event in events.sent] == ["ExecutionFailed"]
+
+
+async def test_name_reoccupied_by_late_submit_is_freed_and_fenced_by_next_cancel() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.reoccupy_after_delete(spark_application(submit, CONFIG))
+    await execution.handle(cancel(submit, 1))
+    assert FENCED_LABEL not in applications.items[name(submit)]["metadata"]["labels"]
+
+    await execution.handle(cancel(submit, 2))
+
+    assert applications.items[name(submit)]["metadata"]["labels"][CANCELLED_LABEL] == "true"
+    assert [event.type for event in events.sent] == ["ExecutionCancelled"]

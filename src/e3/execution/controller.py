@@ -120,13 +120,7 @@ class ExecutionController:
         Живая попытка или недоказанная смерть — ничего: Orchestrator спросит снова.
         Занятое имя (`409`) смерти не доказывает: решает перечитанный ресурс.
         """
-        name = workload_name(command.attempt_id)
-        application = await self._applications.get(name)
-        if application is None:
-            await self._applications.create(attempt_fence(command, self._config))
-            application = await self._applications.get(name)
-        if application is not None:
-            await self._settle(application)
+        await self._fence_and_settle(command)
 
     async def cancel(self, command: CancelExecution) -> None:
         """Ставит на имя попытки Attempt Fence с меткой отмены и шлёт итог, когда она мертва.
@@ -139,7 +133,12 @@ class ExecutionController:
         application = await self._applications.get(name)
         if application is not None and _live(application):
             await self._applications.delete(name)
-            application = None
+        await self._fence_and_settle(command)
+
+    async def _fence_and_settle(self, command: ReconcileExecution | CancelExecution) -> None:
+        """Пустое имя попытки занимает Attempt Fence; итог уходит, если смерть доказана."""
+        name = workload_name(command.attempt_id)
+        application = await self._applications.get(name)
         if application is None:
             await self._applications.create(attempt_fence(command, self._config))
             application = await self._applications.get(name)

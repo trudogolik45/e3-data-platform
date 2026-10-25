@@ -210,6 +210,28 @@ async def test_fail_fast_cancels_running_node_and_fails_run_after_proven_stop(
     assert (await plant.api.run(run_id))["state"] == "FAILED"
 
 
+async def test_fail_fast_keeps_already_published_version(plant: Plant) -> None:
+    run_id = await plant.start(new_read_beside_side_pipeline)
+    read, side = await submissions(plant, run_id, "read", "side")
+    await plant.fake.succeed(read)
+    await plant.consume_until(run_id, "read", "FINALIZING")
+    await plant.finish()
+    assert await plant.state(run_id, "publish") == "SUCCEEDED"
+
+    for number in range(1, MAX_ATTEMPTS + 1):
+        await plant.fake.fail(side, f"executor lost #{number}")
+        await plant.consume_attempts(run_id, min(number + 1, MAX_ATTEMPTS), "side")
+        if number < MAX_ATTEMPTS:
+            side = await plant.submitted(run_id, "side")
+    await plant.consume_until(run_id, "side", "FAILED")
+
+    run = await plant.api.run(run_id)
+    target = UUID(run["outputs"]["result"]["dataset_id"])
+    published = (await plant.node(run_id, "publish"))["published_version_id"]
+    assert run["state"] == "FAILED"
+    assert [v["version_id"] for v in await plant.api.versions(target)] == [published]
+
+
 async def test_node_being_cancelled_is_not_retried_after_spark_failure(plant: Plant) -> None:
     run_id = await plant.start()
     command, _ = await running(plant, run_id)

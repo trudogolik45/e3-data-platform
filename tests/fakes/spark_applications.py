@@ -15,6 +15,7 @@ class InMemorySparkApplications:
         self.items: dict[str, dict[str, Any]] = {}
         self._pods: dict[UUID, list[Pod]] = {}
         self._hidden: set[str] = set()
+        self._reoccupy: dict[str, dict[str, Any]] = {}
 
     async def create(self, manifest: dict[str, Any]) -> bool:
         name = manifest["metadata"]["name"]
@@ -52,6 +53,15 @@ class InMemorySparkApplications:
 
     async def delete(self, name: str) -> None:
         self.items.pop(name, None)
+        if name in self._reoccupy:
+            self.items[name] = self._reoccupy.pop(name)
+
+    def reoccupy_after_delete(self, manifest: dict[str, Any]) -> None:
+        """Сразу после следующего удаления имя снова занимает `manifest`.
+
+        Гонка: опоздавшая SubmitExecution создала задание между удалением и забором.
+        """
+        self._reoccupy[manifest["metadata"]["name"]] = manifest
 
     def vanish_once(self, name: str) -> None:
         """Следующий `get` не видит ресурс: гонка удаления и создания по имени."""
