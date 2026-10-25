@@ -28,6 +28,7 @@ from e3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
 INPUT_PORT = "source"
 DATA_DIR = "parquet"
 MANIFEST_FILE = "manifest.json"
+NUMERIC = frozenset({"long", "double"})
 
 Parameters = dict[str, Any]
 Transform = Callable[[DataFrame, Parameters], DataFrame]
@@ -114,6 +115,14 @@ def require_column(types: dict[str, str], column: str) -> str:
     if column not in types:
         raise BlockError(f"нет колонки {column}")
     return types[column]
+
+
+def require_numeric(types: dict[str, str], column: str, operation: str) -> None:
+    column_type = require_column(types, column)
+    if column_type not in NUMERIC:
+        raise BlockError(
+            f"{operation} по колонке {column}: нужен long или double, а не {column_type}"
+        )
 
 
 def describe_parquet(s3, output: str) -> list[ManifestFile]:

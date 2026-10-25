@@ -21,7 +21,7 @@ from e3.pipelines.graph import (
 )
 from e3.shared.contracts import BlockSpec, DataType
 
-# Input Slot и вход Publish Dataset несут DatasetVersion.
+# Input Slot и вход Publish Dataset — порты с data_type `dataset`.
 SLOT_DATA_TYPE: DataType = "dataset"
 
 
@@ -96,7 +96,9 @@ def _check_output_slots_published(graph: PipelineGraph) -> None:
     published = {node.output_slot for node in graph.nodes if not isinstance(node, BlockNode)}
     for slot in graph.output_slots:
         if slot.name not in published:
-            raise GraphInvalid(f"в Output Slot {slot.name} не публикует ни один Publish Dataset")
+            raise GraphInvalid(
+                f"в Output Slot {slot.name} ничего не публикуется: нет Publish Dataset"
+            )
 
 
 def _check_input_slots_used(graph: PipelineGraph) -> None:

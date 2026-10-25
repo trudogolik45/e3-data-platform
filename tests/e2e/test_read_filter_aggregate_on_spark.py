@@ -29,7 +29,7 @@ from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.manifest import Manifest
 from e3.shared.messages import ExecutionEvent, parse_command
 from tests.integration.conftest import Api
-from tests.integration.graphs import dag_graph
+from tests.integration.graphs import read_filter_aggregate_graph
 
 API_URL = os.environ.get("E3_E2E_API_URL")
 
@@ -109,7 +109,7 @@ async def finished() -> AsyncIterator[FinishedRun]:
 
 
 def _graph() -> dict[str, Any]:
-    graph = dag_graph(*BLOCKS)
+    graph = read_filter_aggregate_graph(*BLOCKS)
     for node in graph["nodes"]:
         if node["kind"] == "BLOCK":
             node["parameters"] = PARAMETERS[node["id"]]
@@ -117,7 +117,7 @@ def _graph() -> dict[str, Any]:
 
 
 async def _start(api: Api) -> str:
-    pipeline_id = await api.new_pipeline(f"dag-on-spark-{uuid4()}")
+    pipeline_id = await api.new_pipeline(f"read-filter-aggregate-on-spark-{uuid4()}")
     assert (await api.save_draft(pipeline_id, _graph())).status_code == 200
     published = await api.publish(pipeline_id)
     assert published.status_code == 201, published.text
@@ -152,7 +152,7 @@ async def _follow(api: Api, run_id: str) -> Trace:
             await asyncio.sleep(POLL_SECONDS)
 
 
-async def test_dag_on_spark_publishes_typed_aggregates(finished: FinishedRun) -> None:
+async def test_spark_publishes_typed_aggregates(finished: FinishedRun) -> None:
     target = finished.run["outputs"]["result"]["dataset_id"]
 
     [version] = await finished.api.versions(UUID(target))

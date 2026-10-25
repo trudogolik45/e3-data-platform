@@ -23,7 +23,7 @@ from e3.api.app import create_app, create_storage
 from e3.runs import ensure_topics
 from e3.settings import Settings
 from e3.shared.storage import ObjectStorage
-from tests.integration.graphs import block_spec, dag_graph, port, read_graph
+from tests.integration.graphs import block_spec, port, read_filter_aggregate_graph, read_graph
 
 pytestmark = pytest.mark.integration
 
@@ -276,7 +276,7 @@ async def new_block(api: Api, kind: str, output: str) -> str:
 
 
 async def publish_pipeline(api: Api, graph: dict[str, Any]) -> tuple[str, int]:
-    pipeline_id = await api.new_pipeline("run")
+    pipeline_id = await api.new_pipeline(f"pipeline-{uuid4()}")
     await api.save_draft(pipeline_id, graph)
     published = await api.publish(pipeline_id)
     assert published.status_code == 201, published.text
@@ -287,11 +287,11 @@ async def new_read_pipeline(api: Api) -> tuple[str, int]:
     return await publish_pipeline(api, read_graph(await new_block(api, "read", "data")))
 
 
-async def new_dag_pipeline(api: Api) -> tuple[str, int]:
+async def new_read_filter_aggregate_pipeline(api: Api) -> tuple[str, int]:
     read = await new_block(api, "read", "data")
     filter_block = await new_block(api, "filter", "result")
     aggregate = await new_block(api, "aggregate", "result")
-    return await publish_pipeline(api, dag_graph(read, filter_block, aggregate))
+    return await publish_pipeline(api, read_filter_aggregate_graph(read, filter_block, aggregate))
 
 
 async def run_request(api: Api, pipeline: PipelineMaker = new_read_pipeline) -> dict[str, Any]:

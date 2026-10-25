@@ -32,7 +32,9 @@ def cond(column, op, value):
 
 
 def test_conditions_are_combined_with_and(sales) -> None:
-    assert where(sales, cond("city", "eq", "msk"), cond("qty", "gt", 2)) == [("msk", 5, 10.0)]
+    result = where(sales, cond("city", "eq", "msk"), cond("qty", "gt", 2))
+
+    assert result == [("msk", 5, 10.0)]
 
 
 @pytest.mark.parametrize(
@@ -47,16 +49,25 @@ def test_conditions_are_combined_with_and(sales) -> None:
     ],
 )
 def test_each_operator_compares_numbers(sales, op, value, expected) -> None:
-    assert sorted(qty for _, qty, _ in where(sales, cond("qty", op, value))) == expected
+    result = where(sales, cond("qty", op, value))
+
+    assert sorted(qty for _, qty, _ in result) == expected
 
 
-def test_null_passes_no_condition(sales) -> None:
-    assert len(where(sales, cond("city", "ne", "msk"))) == 1
-    assert len(where(sales, cond("price", "lt", 1000))) == 3
+@pytest.mark.parametrize(
+    ("condition", "expected"),
+    [(cond("city", "ne", "msk"), ["spb"]), (cond("price", "lt", 1000), ["msk", "msk", "spb"])],
+)
+def test_null_passes_no_condition(sales, condition, expected) -> None:
+    result = where(sales, condition)
+
+    assert sorted(city for city, _, _ in result) == expected
 
 
 def test_double_column_accepts_integer_value(sales) -> None:
-    assert where(sales, cond("price", "gte", 10)) == [("msk", 1, 99.5), ("msk", 5, 10.0)]
+    result = where(sales, cond("price", "gte", 10))
+
+    assert result == [("msk", 1, 99.5), ("msk", 5, 10.0)]
 
 
 def test_ordering_on_string_fails(sales) -> None:

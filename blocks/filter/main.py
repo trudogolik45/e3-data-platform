@@ -5,14 +5,22 @@
 совпадает с типом колонки. `null` не проходит ни одно условие, как в SQL.
 """
 
+import operator
 from typing import Any
 
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
-from spark_io import BlockError, Parameters, column_types, require_column, run
+from spark_io import BlockError, Parameters, column_types, require_column, require_numeric, run
 
 OUTPUT_PORT = "result"
-NUMERIC = frozenset({"long", "double"})
+OPERATORS = {
+    "eq": operator.eq,
+    "ne": operator.ne,
+    "gt": operator.gt,
+    "gte": operator.ge,
+    "lt": operator.lt,
+    "lte": operator.le,
+}
 ORDERING = frozenset({"gt", "gte", "lt", "lte"})
 
 
@@ -27,20 +35,12 @@ def transform(frame: DataFrame, parameters: Parameters) -> DataFrame:
 
 def _predicate(condition: dict[str, Any], types: dict[str, str]) -> Column:
     column, op, value = condition["column"], condition["op"], condition["value"]
+    if op in ORDERING:
+        require_numeric(types, column, op)
     column_type = require_column(types, column)
-    if op in ORDERING and column_type not in NUMERIC:
-        raise BlockError(f"{op} по колонке {column}: нужен long или double, а не {column_type}")
     if not _matches(value, column_type):
         raise BlockError(f"{column}: значение {value!r} не подходит к типу {column_type}")
-    target, literal = F.col(column), F.lit(value)
-    return {
-        "eq": target == literal,
-        "ne": target != literal,
-        "gt": target > literal,
-        "gte": target >= literal,
-        "lt": target < literal,
-        "lte": target <= literal,
-    }[op]
+    return OPERATORS[op](F.col(column), F.lit(value))
 
 
 def _matches(value: Any, column_type: str) -> bool:

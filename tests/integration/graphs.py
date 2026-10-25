@@ -71,7 +71,7 @@ def read_graph(block: str) -> Graph:
     }
 
 
-def dag_graph(read: str, filter_block: str, aggregate: str) -> Graph:
+def read_filter_aggregate_graph(read: str, filter_block: str, aggregate: str) -> Graph:
     """`source → Read → Filter → Aggregate → Publish Dataset(result)`."""
     return {
         "input_slots": [{"name": "source"}],

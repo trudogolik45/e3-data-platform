@@ -30,7 +30,7 @@ from tests.fakes.execution_controller import FakeExecutionController
 from tests.integration.conftest import (
     Api,
     PipelineMaker,
-    new_dag_pipeline,
+    new_read_filter_aggregate_pipeline,
     new_read_pipeline,
     read_object,
     run_request,
@@ -163,19 +163,23 @@ async def test_publication_carries_node_output_manifest_into_parquet_version(
     )
 
 
-DAG_BLOCKS = ["read", "filter", "aggregate"]
+CHAIN = ["read", "filter", "aggregate"]
 
 
-async def test_multi_node_dag_publishes_one_version_from_last_block(plant: Plant) -> None:
-    run_id = await plant.start(new_dag_pipeline)
-
-    for node_id in DAG_BLOCKS:
+async def finished_chain(plant: Plant) -> dict[str, Any]:
+    """Проводит `Read → Filter → Aggregate → Publish Dataset` до конца; отдаёт PipelineRun."""
+    run_id = await plant.start(new_read_filter_aggregate_pipeline)
+    for node_id in CHAIN:
         await plant.execute(run_id, node_id)
     await plant.orchestrator.publish_pending()
+    return await plant.api.run(run_id)
 
-    run = await plant.api.run(run_id)
+
+async def test_multi_node_pipeline_publishes_one_version_from_last_block(plant: Plant) -> None:
+    run = await finished_chain(plant)
+
     [version] = await plant.api.versions(UUID(run["outputs"]["result"]["dataset_id"]))
-    [output] = (await plant.node(run_id, "aggregate"))["outputs"]
+    [output] = (await plant.node(run["pipeline_run_id"], "aggregate"))["outputs"]
     assert run["state"] == "SUCCEEDED"
     assert published_manifest(plant, run["outputs"]["result"]["dataset_id"], version) == (
         read_object(plant.s3, plant.settings, output["manifest_uri"])
@@ -183,13 +187,8 @@ async def test_multi_node_dag_publishes_one_version_from_last_block(plant: Plant
 
 
 async def test_intermediate_node_outputs_do_not_reach_catalog(plant: Plant) -> None:
-    run_id = await plant.start(new_dag_pipeline)
+    run = await finished_chain(plant)
 
-    for node_id in DAG_BLOCKS:
-        await plant.execute(run_id, node_id)
-    await plant.orchestrator.publish_pending()
-
-    run = await plant.api.run(run_id)
     source = await plant.api.versions(UUID(run["inputs"]["source"]["dataset_id"]))
     target = await plant.api.versions(UUID(run["outputs"]["result"]["dataset_id"]))
     assert [v["version_id"] for v in source] == [run["inputs"]["source"]["version_id"]]
@@ -197,7 +196,7 @@ async def test_intermediate_node_outputs_do_not_reach_catalog(plant: Plant) -> N
 
 
 async def test_downstream_receives_upstream_node_output_as_resolved_input(plant: Plant) -> None:
-    run_id = await plant.start(new_dag_pipeline)
+    run_id = await plant.start(new_read_filter_aggregate_pipeline)
     await plant.execute(run_id, "read")
 
     command = await plant.submitted(run_id, "filter")
