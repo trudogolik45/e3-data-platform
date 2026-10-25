@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from e3.blocks.models import Base as BlocksBase
 from e3.catalog.models import Base as CatalogBase
+from e3.identity.models import Base as IdentityBase
 from e3.pipelines.models import Base as PipelinesBase
 from e3.runs.models import Base as RunsBase
 
@@ -22,6 +23,7 @@ target_metadata = [
     BlocksBase.metadata,
     PipelinesBase.metadata,
     RunsBase.metadata,
+    IdentityBase.metadata,
 ]
 
 

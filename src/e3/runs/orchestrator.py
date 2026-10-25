@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from e3 import catalog
 from e3.blocks import BlockRegistry
-from e3.identity import Principal, authorize_project
+from e3.identity import IdentityService, Principal, Role, authorize
 from e3.pipelines import (
     PUBLISH_INPUT_PORT,
     BlockRef,
@@ -114,6 +114,7 @@ class PipelineRun:
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
     created_at: datetime
+    initiated_by_user_id: UUID
     failed_node_run_id: UUID | None
 
 
@@ -162,6 +163,7 @@ class RunOrchestrator:
         pipelines: PipelineService,
         blocks: BlockRegistry,
         storage: ObjectStorage,
+        identity: IdentityService,
         reconcile_after: timedelta,
     ) -> None:
         self._sessions = sessions
@@ -169,6 +171,7 @@ class RunOrchestrator:
         self._pipelines = pipelines
         self._blocks = blocks
         self._storage = storage
+        self._identity = identity
         self._reconcile_after = reconcile_after
 
     async def start(
@@ -176,7 +179,7 @@ class RunOrchestrator:
     ) -> PipelineRun:
         """Создаёт PipelineRun; повтор с тем же ключом и телом отдаёт уже созданный."""
         pipeline = await self._pipelines.get(request.pipeline_id)
-        authorize_project(principal, pipeline.project_id)
+        authorize(principal, pipeline.project_id, Role.EDITOR)
         async with self._sessions() as session:
             existing = await _find_by_key(session, pipeline.project_id, idempotency_key)
         if existing is not None:
@@ -198,7 +201,13 @@ class RunOrchestrator:
         )
         specs = await self._specs(version.graph)
         return await self._create(
-            pipeline.project_id, version.graph, request, bindings, idempotency_key, specs
+            pipeline.project_id,
+            principal.user_id,
+            version.graph,
+            request,
+            bindings,
+            idempotency_key,
+            specs,
         )
 
     def outbox_relay(self, publisher: Publisher) -> OutboxRelay:
@@ -340,6 +349,7 @@ class RunOrchestrator:
     async def _create(
         self,
         project_id: UUID,
+        initiator: UUID,
         graph: PipelineGraph,
         request: RunRequest,
         bindings: Bindings,
@@ -360,6 +370,7 @@ class RunOrchestrator:
                     outputs=_dump(bindings.outputs),
                     idempotency_key=idempotency_key,
                     request_hash=request.fingerprint(),
+                    initiated_by_user_id=initiator,
                 )
                 .on_conflict_do_nothing(index_elements=["project_id", "idempotency_key"])
                 .returning(PipelineRunRow.id)
@@ -769,6 +780,7 @@ def _to_run(row: PipelineRunRow) -> PipelineRun:
         inputs={slot: InputBinding.model_validate(b) for slot, b in row.inputs.items()},
         outputs={slot: OutputBinding.model_validate(b) for slot, b in row.outputs.items()},
         created_at=row.created_at,
+        initiated_by_user_id=row.initiated_by_user_id,
         failed_node_run_id=row.failed_node_run_id,
     )
 

@@ -10,7 +10,12 @@ class Settings(BaseSettings):
 
     # Без значения по умолчанию: забытая переменная не должна включать dev-доступ.
     environment: Literal["dev", "test", "prod"]
-    auth_mode: Literal["dev"] = "dev"
+    auth_mode: Literal["dev", "oidc"] = "dev"
+    # OIDC-провайдер. JWKS — отдельным адресом: из контейнера провайдер виден не по `iss`.
+    oidc_issuer: str | None = None
+    oidc_audience: str | None = None
+    oidc_jwks_url: str | None = None
+    oidc_algorithms: list[str] = Field(default_factory=lambda: ["RS256"])
 
     database_url: str = "postgresql+asyncpg://e3:e3@localhost:5432/e3"
 

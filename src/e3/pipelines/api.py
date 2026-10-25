@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 
-from e3.identity import Principal, ProjectAccessDenied, authorize_project, current_principal
+from e3.identity import Principal, ProjectAccessDenied, Role, authorize, current_principal
 from e3.pipelines.graph import PipelineGraph
 from e3.pipelines.service import (
     Pipeline,
@@ -63,7 +63,7 @@ PrincipalDep = Annotated[Principal, Depends(current_principal)]
 async def create_pipeline(
     body: CreatePipelineIn, pipelines: PipelinesDep, principal: PrincipalDep
 ) -> PipelineOut:
-    _authorize(principal, body.project_id)
+    _authorize(principal, body.project_id, Role.EDITOR)
     return _pipeline_out(await pipelines.create(project_id=body.project_id, name=body.name))
 
 
@@ -71,7 +71,7 @@ async def create_pipeline(
 async def archive_pipeline(
     pipeline_id: UUID, pipelines: PipelinesDep, principal: PrincipalDep
 ) -> PipelineOut:
-    await _accessible_pipeline(pipelines, principal, pipeline_id)
+    await _accessible_pipeline(pipelines, principal, pipeline_id, Role.EDITOR)
     return _pipeline_out(await pipelines.archive(pipeline_id))
 
 
@@ -79,7 +79,7 @@ async def archive_pipeline(
 async def save_draft(
     pipeline_id: UUID, graph: PipelineGraph, pipelines: PipelinesDep, principal: PrincipalDep
 ) -> PipelineGraph:
-    await _accessible_pipeline(pipelines, principal, pipeline_id)
+    await _accessible_pipeline(pipelines, principal, pipeline_id, Role.EDITOR)
     try:
         await pipelines.save_draft(pipeline_id, graph)
     except PipelineArchived:
@@ -91,7 +91,7 @@ async def save_draft(
 async def publish_draft(
     pipeline_id: UUID, pipelines: PipelinesDep, principal: PrincipalDep
 ) -> PipelineVersionOut:
-    await _accessible_pipeline(pipelines, principal, pipeline_id)
+    await _accessible_pipeline(pipelines, principal, pipeline_id, Role.EDITOR)
     try:
         version = await pipelines.publish(pipeline_id)
     except PipelineArchived:
@@ -105,7 +105,7 @@ async def publish_draft(
 async def get_version(
     pipeline_id: UUID, version_number: int, pipelines: PipelinesDep, principal: PrincipalDep
 ) -> PipelineVersionOut:
-    await _accessible_pipeline(pipelines, principal, pipeline_id)
+    await _accessible_pipeline(pipelines, principal, pipeline_id, Role.VIEWER)
     try:
         version = await pipelines.get_version(pipeline_id, version_number)
     except PipelineVersionNotFound:
@@ -114,19 +114,19 @@ async def get_version(
 
 
 async def _accessible_pipeline(
-    pipelines: PipelineService, principal: Principal, pipeline_id: UUID
+    pipelines: PipelineService, principal: Principal, pipeline_id: UUID, minimum: Role
 ) -> Pipeline:
     try:
         pipeline = await pipelines.get(pipeline_id)
     except PipelineNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Pipeline не найден") from None
-    _authorize(principal, pipeline.project_id)
+    _authorize(principal, pipeline.project_id, minimum)
     return pipeline
 
 
-def _authorize(principal: Principal, project_id: UUID) -> None:
+def _authorize(principal: Principal, project_id: UUID, minimum: Role) -> None:
     try:
-        authorize_project(principal, project_id)
+        authorize(principal, project_id, minimum)
     except ProjectAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
 

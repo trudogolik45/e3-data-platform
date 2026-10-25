@@ -1,37 +1,34 @@
-"""Заглушка доступа для dev: один Organization, один Project, один Admin.
-
-Настоящие OIDC и роли появятся в срезе Identity & Access (#8).
-"""
+"""Role, Principal и проверка доступа к Project по Membership (ADR-0004)."""
 
 from dataclasses import dataclass
-from typing import Literal
+from enum import StrEnum
 from uuid import UUID
 
-from fastapi import Request
 
-Role = Literal["Viewer", "Editor", "Admin"]
+class Role(StrEnum):
+    VIEWER = "Viewer"
+    EDITOR = "Editor"
+    ADMIN = "Admin"
+
+    def includes(self, minimum: "Role") -> bool:
+        """Каждая следующая Role включает предыдущую."""
+        return LADDER.index(self) >= LADDER.index(minimum)
+
+
+LADDER = (Role.VIEWER, Role.EDITOR, Role.ADMIN)
 
 
 class ProjectAccessDenied(Exception):
-    """У пользователя нет доступа к Project."""
+    """У пользователя нет Membership в Project с нужной Role."""
 
 
 @dataclass(frozen=True)
 class Principal:
     user_id: UUID
-    organization_id: UUID
     project_roles: dict[UUID, Role]
 
 
-def dev_principal(*, user_id: UUID, organization_id: UUID, project_id: UUID) -> Principal:
-    return Principal(user_id, organization_id, {project_id: "Admin"})
-
-
-def authorize_project(principal: Principal, project_id: UUID) -> None:
-    if project_id not in principal.project_roles:
+def authorize(principal: Principal, project_id: UUID, minimum: Role) -> None:
+    role = principal.project_roles.get(project_id)
+    if role is None or not role.includes(minimum):
         raise ProjectAccessDenied(str(project_id))
-
-
-def current_principal(request: Request) -> Principal:
-    principal: Principal = request.app.state.principal
-    return principal

@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from e3.identity import Principal, ProjectAccessDenied, authorize_project, current_principal
+from e3.identity import Principal, ProjectAccessDenied, Role, authorize, current_principal
 from e3.pipelines import PipelineArchived, PipelineNotFound
 from e3.runs.attempts import AttemptReason, AttemptState
 from e3.runs.bindings import InputBinding, OutputBinding, RunRequest, RunRequestInvalid
@@ -36,6 +36,8 @@ class PipelineRunOut(BaseModel):
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
     created_at: datetime
+    # Initiator: его Membership перепроверяется перед каждой Publication.
+    initiated_by_user_id: UUID
     # Первопричина Fail-fast: первый упавший NodeRun.
     failed_node_run_id: UUID | None
 
@@ -110,7 +112,7 @@ async def start_run(
 async def get_run(
     pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
 ) -> PipelineRunOut:
-    return _run_out(await _accessible_run(orchestrator, principal, pipeline_run_id))
+    return _run_out(await _accessible_run(orchestrator, principal, pipeline_run_id, Role.VIEWER))
 
 
 @router.post("/{pipeline_run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
@@ -118,7 +120,7 @@ async def cancel_run(
     pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
 ) -> PipelineRunOut:
     """Запрос принят, а не Spark остановлен: CANCELLED наступит после доказанной остановки."""
-    await _accessible_run(orchestrator, principal, pipeline_run_id)
+    await _accessible_run(orchestrator, principal, pipeline_run_id, Role.EDITOR)
     try:
         run = await orchestrator.cancel(pipeline_run_id)
     except RunNotCancellable:
@@ -130,19 +132,19 @@ async def cancel_run(
 async def list_nodes(
     pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
 ) -> list[NodeRunOut]:
-    await _accessible_run(orchestrator, principal, pipeline_run_id)
+    await _accessible_run(orchestrator, principal, pipeline_run_id, Role.VIEWER)
     return [_node_out(node) for node in await orchestrator.list_nodes(pipeline_run_id)]
 
 
 async def _accessible_run(
-    orchestrator: RunOrchestrator, principal: Principal, pipeline_run_id: UUID
+    orchestrator: RunOrchestrator, principal: Principal, pipeline_run_id: UUID, minimum: Role
 ) -> PipelineRun:
     try:
         run = await orchestrator.get_run(pipeline_run_id)
     except PipelineRunNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "PipelineRun не найден") from None
     try:
-        authorize_project(principal, run.project_id)
+        authorize(principal, run.project_id, minimum)
     except ProjectAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
     return run
@@ -158,6 +160,7 @@ def _run_out(run: PipelineRun) -> PipelineRunOut:
         inputs=run.inputs,
         outputs=run.outputs,
         created_at=run.created_at,
+        initiated_by_user_id=run.initiated_by_user_id,
         failed_node_run_id=run.failed_node_run_id,
     )
 
