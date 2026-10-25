@@ -211,6 +211,9 @@ class Api:
     async def complete(self, dataset_id: UUID, upload_id: UUID) -> httpx.Response:
         return await self.client.post(f"/api/v1/datasets/{dataset_id}/uploads/{upload_id}/complete")
 
+    async def archive_dataset(self, dataset_id: UUID | str) -> httpx.Response:
+        return await self.client.post(f"/api/v1/datasets/{dataset_id}/archive")
+
     async def versions(self, dataset_id: UUID) -> list[dict[str, object]]:
         response = await self.client.get(f"/api/v1/datasets/{dataset_id}/versions")
         assert response.status_code == 200, response.text
@@ -236,6 +239,9 @@ class Api:
 
     async def publish(self, pipeline_id: UUID) -> httpx.Response:
         return await self.client.post(f"/api/v1/pipelines/{pipeline_id}/versions")
+
+    async def archive_pipeline(self, pipeline_id: UUID | str) -> httpx.Response:
+        return await self.client.post(f"/api/v1/pipelines/{pipeline_id}/archive")
 
     async def pipeline_version(self, pipeline_id: UUID, version_number: int) -> httpx.Response:
         return await self.client.get(f"/api/v1/pipelines/{pipeline_id}/versions/{version_number}")

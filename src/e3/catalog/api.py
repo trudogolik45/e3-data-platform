@@ -45,6 +45,7 @@ class DatasetOut(BaseModel):
     project_id: UUID
     name: str
     created_at: datetime
+    archived: bool
 
 
 class StartUploadIn(BaseModel):
@@ -106,19 +107,22 @@ async def create_dataset(
         dataset = await catalog.create_dataset(project_id=body.project_id, name=body.name)
     except DatasetNameTaken:
         raise HTTPException(status.HTTP_409_CONFLICT, "Dataset с таким именем уже есть") from None
-    return DatasetOut(
-        dataset_id=dataset.dataset_id,
-        project_id=dataset.project_id,
-        name=dataset.name,
-        created_at=dataset.created_at,
-    )
+    return _dataset_out(dataset)
+
+
+@router.post("/{dataset_id}/archive")
+async def archive_dataset(
+    dataset_id: UUID, catalog: CatalogDep, principal: PrincipalDep
+) -> DatasetOut:
+    await _accessible_dataset(catalog, principal, dataset_id)
+    return _dataset_out(await catalog.archive_dataset(dataset_id))
 
 
 @router.post("/{dataset_id}/uploads", status_code=status.HTTP_201_CREATED)
 async def start_upload(
     dataset_id: UUID, body: StartUploadIn, catalog: CatalogDep, principal: PrincipalDep
 ) -> StartUploadOut:
-    await _accessible_dataset(catalog, principal, dataset_id)
+    await _uploadable_dataset(catalog, principal, dataset_id)
     started = await catalog.start_upload(dataset_id, checksum_sha256=body.checksum_sha256)
     return StartUploadOut(
         upload_id=started.upload_id,
@@ -137,7 +141,7 @@ async def complete_upload(
     response: Response,
     background: BackgroundTasks,
 ) -> UploadStatusOut:
-    await _accessible_dataset(catalog, principal, dataset_id)
+    await _uploadable_dataset(catalog, principal, dataset_id)
     try:
         upload = await catalog.complete_upload(dataset_id, upload_id)
     except UploadNotFound:
@@ -171,11 +175,27 @@ async def _accessible_dataset(catalog: Catalog, principal: Principal, dataset_id
     return dataset
 
 
+async def _uploadable_dataset(catalog: Catalog, principal: Principal, dataset_id: UUID) -> None:
+    dataset = await _accessible_dataset(catalog, principal, dataset_id)
+    if dataset.archived:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Dataset в архиве")
+
+
 def _authorize(principal: Principal, project_id: UUID) -> None:
     try:
         authorize_project(principal, project_id)
     except ProjectAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
+
+
+def _dataset_out(dataset: Dataset) -> DatasetOut:
+    return DatasetOut(
+        dataset_id=dataset.dataset_id,
+        project_id=dataset.project_id,
+        name=dataset.name,
+        created_at=dataset.created_at,
+        archived=dataset.archived,
+    )
 
 
 def _upload_out(upload: UploadStatus) -> UploadStatusOut:

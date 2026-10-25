@@ -1,9 +1,10 @@
-"""Создание и поиск Dataset внутри Project."""
+"""Создание, поиск и архивирование Dataset внутри Project."""
 
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,7 @@ class Dataset:
     project_id: UUID
     name: str
     created_at: datetime
+    archived: bool
 
 
 def normalize_name(name: str) -> str:
@@ -51,5 +53,13 @@ async def get_dataset(session: AsyncSession, dataset_id: UUID) -> Dataset:
     return _to_dataset(row)
 
 
+async def archive_dataset(session: AsyncSession, dataset_id: UUID) -> Dataset:
+    """Скрывает Dataset из обращения; повтор ничего не меняет."""
+    await session.execute(
+        update(DatasetRow).where(DatasetRow.id == dataset_id).values(archived=True)
+    )
+    return await get_dataset(session, dataset_id)
+
+
 def _to_dataset(row: DatasetRow) -> Dataset:
-    return Dataset(row.id, row.project_id, row.name, row.created_at)
+    return Dataset(row.id, row.project_id, row.name, row.created_at, row.archived)

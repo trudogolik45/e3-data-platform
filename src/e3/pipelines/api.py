@@ -11,6 +11,7 @@ from e3.identity import Principal, ProjectAccessDenied, authorize_project, curre
 from e3.pipelines.graph import PipelineGraph
 from e3.pipelines.service import (
     Pipeline,
+    PipelineArchived,
     PipelineNotFound,
     PipelineService,
     PipelineVersion,
@@ -38,6 +39,7 @@ class PipelineOut(BaseModel):
     project_id: UUID
     name: str
     created_at: datetime
+    archived: bool
 
 
 class PipelineVersionOut(BaseModel):
@@ -65,12 +67,23 @@ async def create_pipeline(
     return _pipeline_out(await pipelines.create(project_id=body.project_id, name=body.name))
 
 
+@router.post("/{pipeline_id}/archive")
+async def archive_pipeline(
+    pipeline_id: UUID, pipelines: PipelinesDep, principal: PrincipalDep
+) -> PipelineOut:
+    await _accessible_pipeline(pipelines, principal, pipeline_id)
+    return _pipeline_out(await pipelines.archive(pipeline_id))
+
+
 @router.put("/{pipeline_id}/draft")
 async def save_draft(
     pipeline_id: UUID, graph: PipelineGraph, pipelines: PipelinesDep, principal: PrincipalDep
 ) -> PipelineGraph:
     await _accessible_pipeline(pipelines, principal, pipeline_id)
-    await pipelines.save_draft(pipeline_id, graph)
+    try:
+        await pipelines.save_draft(pipeline_id, graph)
+    except PipelineArchived:
+        raise _archived() from None
     return graph
 
 
@@ -81,6 +94,8 @@ async def publish_draft(
     await _accessible_pipeline(pipelines, principal, pipeline_id)
     try:
         version = await pipelines.publish(pipeline_id)
+    except PipelineArchived:
+        raise _archived() from None
     except GraphInvalid as invalid:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(invalid)) from None
     return _version_out(version)
@@ -116,12 +131,17 @@ def _authorize(principal: Principal, project_id: UUID) -> None:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
 
 
+def _archived() -> HTTPException:
+    return HTTPException(status.HTTP_409_CONFLICT, "Pipeline в архиве")
+
+
 def _pipeline_out(pipeline: Pipeline) -> PipelineOut:
     return PipelineOut(
         pipeline_id=pipeline.pipeline_id,
         project_id=pipeline.project_id,
         name=pipeline.name,
         created_at=pipeline.created_at,
+        archived=pipeline.archived,
     )
 
 

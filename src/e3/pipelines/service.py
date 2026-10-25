@@ -4,10 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from e3 import catalog
 from e3.blocks import BlockNotFound, BlockRegistry
+from e3.pipelines.defaults import check_defaults
 from e3.pipelines.graph import BlockRef, PipelineGraph
 from e3.pipelines.models import PipelineRow, PipelineVersionRow
 from e3.pipelines.validation import validate_graph
@@ -22,12 +24,17 @@ class PipelineVersionNotFound(Exception):
     """У Pipeline нет версии с таким номером."""
 
 
+class PipelineArchived(Exception):
+    """Pipeline в архиве: его нельзя менять и запускать."""
+
+
 @dataclass(frozen=True)
 class Pipeline:
     pipeline_id: UUID
     project_id: UUID
     name: str
     created_at: datetime
+    archived: bool
 
 
 @dataclass(frozen=True)
@@ -40,9 +47,15 @@ class PipelineVersion:
 
 
 class PipelineService:
-    def __init__(self, sessions: async_sessionmaker[AsyncSession], blocks: BlockRegistry) -> None:
+    def __init__(
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        blocks: BlockRegistry,
+        datasets: catalog.Catalog,
+    ) -> None:
         self._sessions = sessions
         self._blocks = blocks
+        self._datasets = datasets
 
     async def create(self, *, project_id: UUID, name: str) -> Pipeline:
         row = PipelineRow(
@@ -61,9 +74,17 @@ class PipelineService:
         async with self._sessions() as session:
             return _to_pipeline(await _pipeline_row(session, pipeline_id))
 
+    async def archive(self, pipeline_id: UUID) -> Pipeline:
+        """Скрывает Pipeline из обращения; повтор ничего не меняет."""
+        async with self._sessions.begin() as session:
+            await session.execute(
+                update(PipelineRow).where(PipelineRow.id == pipeline_id).values(archived=True)
+            )
+            return _to_pipeline(await _pipeline_row(session, pipeline_id))
+
     async def save_draft(self, pipeline_id: UUID, graph: PipelineGraph) -> None:
         async with self._sessions.begin() as session:
-            row = await _pipeline_row(session, pipeline_id, lock=True)
+            row = await _active_pipeline_row(session, pipeline_id)
             row.draft = graph.model_dump(mode="json")
 
     async def publish(self, pipeline_id: UUID) -> PipelineVersion:
@@ -73,9 +94,10 @@ class PipelineService:
         между проверкой и записью, а номера идут без пропусков.
         """
         async with self._sessions.begin() as session:
-            pipeline = await _pipeline_row(session, pipeline_id, lock=True)
+            pipeline = await _active_pipeline_row(session, pipeline_id)
             graph = PipelineGraph.model_validate(pipeline.draft)
             validate_graph(graph, await self._specs(graph.block_refs()))
+            await check_defaults(self._datasets, graph, pipeline.project_id)
             pipeline.last_version_number += 1
             row = PipelineVersionRow(
                 id=uuid4(),
@@ -120,8 +142,15 @@ async def _pipeline_row(
     return row
 
 
+async def _active_pipeline_row(session: AsyncSession, pipeline_id: UUID) -> PipelineRow:
+    row = await _pipeline_row(session, pipeline_id, lock=True)
+    if row.archived:
+        raise PipelineArchived(str(pipeline_id))
+    return row
+
+
 def _to_pipeline(row: PipelineRow) -> Pipeline:
-    return Pipeline(row.id, row.project_id, row.name, row.created_at)
+    return Pipeline(row.id, row.project_id, row.name, row.created_at, row.archived)
 
 
 def _to_version(row: PipelineVersionRow) -> PipelineVersion:
