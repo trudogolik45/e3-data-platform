@@ -1,6 +1,9 @@
 from uuid import uuid4
 
+import pytest
+
 from e3.execution.controller import ExecutionController
+from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import WorkloadConfig
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
@@ -152,3 +155,29 @@ async def test_application_not_yet_running_is_not_reported() -> None:
     pending = await execution.report()
 
     assert (pending, events.sent) == (1, [])
+
+
+async def test_spark_pods_request_configured_cpu_share_of_core(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("E3_SPARK_CORE_REQUEST", "250m")
+    config = ExecutionSettings(_env_file=None).workload()  # pyright: ignore[reportCallIssue]
+    applications = InMemorySparkApplications()
+    execution = ExecutionController(applications, RecordedEvents(), StoredResults(), config)
+
+    await execution.submit(command())
+
+    [spec] = [app["spec"] for app in applications.items.values()]
+    for pod in (spec["driver"], spec["executor"]):
+        assert (pod["cores"], pod["coreRequest"]) == (1, "250m")
+
+
+async def test_spark_pods_request_whole_core_by_default() -> None:
+    execution, applications, _, _ = controller()
+
+    await execution.submit(command())
+
+    [spec] = [app["spec"] for app in applications.items.values()]
+    for pod in (spec["driver"], spec["executor"]):
+        assert pod["cores"] == 1
+        assert "coreRequest" not in pod

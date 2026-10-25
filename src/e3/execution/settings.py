@@ -18,6 +18,8 @@ class ExecutionSettings(BaseSettings):
     spark_namespace: str = "default"
     spark_service_account: str = "spark-operator-spark"
     spark_version: str = "3.5.9"
+    # CPU-запрос driver и executor, например "250m" на тесном стенде; по умолчанию — целое ядро.
+    spark_core_request: str | None = None
     # S3 глазами workload'а в кластере и Secret с его ключами.
     spark_s3_endpoint_url: str = "http://minio:9000"
     spark_s3_secret: str = "e3-s3"
@@ -36,4 +38,5 @@ class ExecutionSettings(BaseSettings):
             spark_version=self.spark_version,
             s3_endpoint_url=self.spark_s3_endpoint_url,
             s3_secret=self.spark_s3_secret,
+            core_request=self.spark_core_request,
         )
