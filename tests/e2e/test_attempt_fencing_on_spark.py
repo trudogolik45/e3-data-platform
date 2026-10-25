@@ -199,10 +199,6 @@ def _created(application: dict[str, Any]) -> datetime:
 
 def _original(fence: dict[str, Any]) -> SubmitExecution:
     """Исходная SubmitExecution попытки: опоздавшая доставка из outbox."""
-    check = parse_command(fence["metadata"]["annotations"][COMMAND_ANNOTATION].encode())
-    return SubmitExecution(
-        node_run_id=check.node_run_id,
-        attempt_id=check.attempt_id,
-        trace_id=check.trace_id,
-        payload=check.payload,
-    )
+    command = parse_command(fence["metadata"]["annotations"][COMMAND_ANNOTATION].encode())
+    assert isinstance(command, SubmitExecution)
+    return command

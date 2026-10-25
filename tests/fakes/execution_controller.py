@@ -38,11 +38,11 @@ from e3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
 from e3.shared.messages import (
     COMMANDS_TOPIC,
     EVENTS_TOPIC,
+    Command,
     ExecutionEvent,
     ExecutionFailed,
     ExecutionSucceeded,
     FailureReason,
-    ReconcileExecution,
     SubmitExecution,
     failed,
     parse_command,
@@ -62,8 +62,6 @@ WORKLOAD = WorkloadConfig(
     s3_endpoint_url="http://minio:9000",
     s3_secret="e3-s3",
 )
-
-type Command = SubmitExecution | ReconcileExecution
 
 
 class FakeExecutionController:

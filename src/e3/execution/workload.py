@@ -11,7 +11,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from e3.shared.messages import ReconcileExecution, SubmitExecution
+from e3.shared.messages import ReconcileExecution, SubmitExecution, original_submission
 
 GROUP = "sparkoperator.k8s.io"
 VERSION = "v1beta2"
@@ -67,15 +67,13 @@ def is_fence(application: dict[str, Any]) -> bool:
 
 def attempt_fence(command: ReconcileExecution, config: WorkloadConfig) -> dict[str, Any]:
     """Занимает имя попытки ресурсом, который Spark Operator не запускает."""
-    fence = spark_application(command, config)
+    fence = spark_application(original_submission(command), config)
     fence["metadata"]["labels"][FENCED_LABEL] = "true"
     fence["spec"]["suspend"] = True
     return fence
 
 
-def spark_application(
-    command: SubmitExecution | ReconcileExecution, config: WorkloadConfig
-) -> dict[str, Any]:
+def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[str, Any]:
     labels = {ATTEMPT_LABEL: str(command.attempt_id), NODE_RUN_LABEL: str(command.node_run_id)}
     pod: dict[str, Any] = {
         "cores": 1,

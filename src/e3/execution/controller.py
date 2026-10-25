@@ -23,7 +23,9 @@ from e3.execution.workload import (
 )
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
+    Command,
     ExecutionEvent,
+    FailureReason,
     ReconcileExecution,
     SubmitExecution,
     failed,
@@ -38,8 +40,12 @@ log = logging.getLogger(__name__)
 # `status.applicationState.state` Spark Operator.
 COMPLETED = "COMPLETED"
 STARTED_STATES = {"RUNNING", "SUCCEEDING", COMPLETED}
-# Из них оператор уже ничего не перезапустит: `restartPolicy: Never`.
-TERMINAL_STATES = {COMPLETED, "FAILED", "SUBMISSION_FAILED"}
+# Провалы, из которых оператор уже ничего не перезапустит: `restartPolicy: Never`.
+FAILURE_REASONS: dict[str, FailureReason] = {
+    "FAILED": "SPARK_FAILED",
+    "SUBMISSION_FAILED": "SUBMISSION_FAILED",
+}
+TERMINAL_STATES = {COMPLETED, *FAILURE_REASONS}
 # Фазы pod'а, в которых он точно не работает; `Unknown` ничего не доказывает.
 FINISHED_PHASES = {"Succeeded", "Failed"}
 
@@ -85,7 +91,7 @@ class ExecutionController:
         self._results = results
         self._config = config
 
-    async def handle(self, command: SubmitExecution | ReconcileExecution) -> None:
+    async def handle(self, command: Command) -> None:
         match command:
             case SubmitExecution():
                 await self.submit(command)
@@ -150,11 +156,9 @@ class ExecutionController:
         state = _state(application)
         if state.get("state") not in TERMINAL_STATES or not await self._dead(command.attempt_id):
             return None
-        error = f"{state['state']}: {state.get('errorMessage', '')}"
-        if state["state"] == "FAILED":
-            return failed(command, error, "SPARK_FAILED")
-        if state["state"] == "SUBMISSION_FAILED":
-            return failed(command, error, "SUBMISSION_FAILED")
+        if state["state"] in FAILURE_REASONS:
+            error = f"{state['state']}: {state.get('errorMessage', '')}"
+            return failed(command, error, FAILURE_REASONS[state["state"]])
         result = await self._results.fetch(command.payload.context)
         if result is None:
             return failed(command, "блок завершился, но не записал ExecutionResult", "NO_RESULT")
@@ -166,8 +170,11 @@ class ExecutionController:
         return all(pod.phase in FINISHED_PHASES and not pod.terminating for pod in pods)
 
 
-def _command(application: dict[str, Any]) -> SubmitExecution | ReconcileExecution:
-    return parse_command(application["metadata"]["annotations"][COMMAND_ANNOTATION].encode())
+def _command(application: dict[str, Any]) -> SubmitExecution:
+    command = parse_command(application["metadata"]["annotations"][COMMAND_ANNOTATION].encode())
+    if not isinstance(command, SubmitExecution):
+        raise ValueError(f"в {COMMAND_ANNOTATION} не SubmitExecution: {command.type}")
+    return command
 
 
 def _state(application: dict[str, Any]) -> dict[str, Any]:

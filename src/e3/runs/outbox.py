@@ -20,7 +20,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from e3.runs.models import InboxRow, OutboxRow
-from e3.shared.messages import COMMANDS_TOPIC, ReconcileExecution, SubmitExecution
+from e3.shared.messages import COMMANDS_TOPIC, Command
 
 RELAY_BATCH = 100
 RELAY_LEASE = timedelta(minutes=1)
@@ -32,7 +32,7 @@ class Publisher(Protocol):
         ...
 
 
-def enqueue(session: AsyncSession, command: SubmitExecution | ReconcileExecution) -> None:
+def enqueue(session: AsyncSession, command: Command) -> None:
     session.add(
         OutboxRow(
             id=command.event_id,

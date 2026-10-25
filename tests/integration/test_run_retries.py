@@ -85,6 +85,7 @@ async def test_retryable_failure_is_followed_by_attempt_that_succeeds(
     attempts = await plant.attempts(run_id)
     assert second.attempt_id != first.attempt_id
     assert summary(attempts) == [(1, *ended), (2, "SUCCEEDED", None)]
+    assert (await plant.node(run_id, "read"))["error"] is None
     assert [a["attempt_id"] for a in attempts] == [str(first.attempt_id), str(second.attempt_id)]
     assert (await plant.api.run(run_id))["state"] == "SUCCEEDED"
 
@@ -202,7 +203,9 @@ async def age(plant: Plant, attempt_id: UUID, by: timedelta) -> None:
         await engine.dispose()
 
 
-TIMEOUT = timedelta(seconds=601)
+def past_timeout(plant: Plant) -> timedelta:
+    """Чуть больше таймаута reconciliation стенда."""
+    return timedelta(seconds=plant.settings.reconcile_after_seconds + 1)
 
 
 async def reconciles(plant: Plant, attempt_id: UUID) -> list[ReconcileExecution]:
@@ -219,15 +222,15 @@ async def test_quiet_live_attempt_is_reconciled_not_lost(plant: Plant) -> None:
     command = await plant.submitted(run_id)
     assert await reconciles(plant, command.attempt_id) == []
 
-    await age(plant, command.attempt_id, TIMEOUT)
+    await age(plant, command.attempt_id, past_timeout(plant))
     await plant.orchestrator.reconcile_pending()
-    await age(plant, command.attempt_id, TIMEOUT)
+    await age(plant, command.attempt_id, past_timeout(plant))
     await plant.orchestrator.reconcile_pending()
 
     [check] = await reconciles(plant, command.attempt_id)
     assert (check.node_run_id, check.payload) == (command.node_run_id, command.payload)
     assert summary(await plant.attempts(run_id)) == [(1, "SUBMITTED", None)]
-    await age(plant, command.attempt_id, TIMEOUT)
+    await age(plant, command.attempt_id, past_timeout(plant))
     await plant.orchestrator.reconcile_pending()
     [next_check] = await reconciles(plant, command.attempt_id)
     assert next_check.event_id != check.event_id
@@ -241,11 +244,11 @@ async def test_unprocessed_check_is_replaced_and_vanished_attempt_is_retried(
     controller = plant.fake.controller()
     await controller.handle(first)
     plant.fake.cluster.delete(f"e3-{first.attempt_id}")
-    await age(plant, first.attempt_id, TIMEOUT)
+    await age(plant, first.attempt_id, past_timeout(plant))
     await plant.orchestrator.reconcile_pending()
     [unprocessed] = await reconciles(plant, first.attempt_id)
 
-    await age(plant, first.attempt_id, TIMEOUT)
+    await age(plant, first.attempt_id, past_timeout(plant))
     await plant.orchestrator.reconcile_pending()
     [check] = await reconciles(plant, first.attempt_id)
     restarted = plant.fake.controller()

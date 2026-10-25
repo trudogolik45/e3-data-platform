@@ -278,8 +278,8 @@ class RunOrchestrator:
         """
         async with self._sessions.begin() as session:
             quiet = await self._quiet_attempts(session)
-            waiting = await unsent(session, [_last_check(a) for a in quiet if a.reconcile_count])
-            due = [a for a in quiet if _last_check(a) not in waiting]
+            waiting = await unsent(session, [_last_check_id(a) for a in quiet if a.reconcile_count])
+            due = [a for a in quiet if _last_check_id(a) not in waiting]
             for attempt in due:
                 attempt.reconcile_count += 1
                 attempt.reconcile_requested_at = func.now()
@@ -394,7 +394,6 @@ class RunOrchestrator:
                 number=number,
                 state=AttemptState.SUBMITTED,
                 command=command.model_dump(mode="json"),
-                reconcile_count=0,
             )
         )
         enqueue(session, command)
@@ -437,7 +436,12 @@ class RunOrchestrator:
         `Succeeded` попытку не завершает: итог ставит проверка manifest в FINALIZING.
         """
         if node.state not in AWAITING_OUTCOME or attempt.state not in LIVE:
-            log.info("событие %s для NodeRun в %s пропущено", event.type, node.state)
+            log.info(
+                "событие %s пропущено: NodeRun в %s, попытка в %s",
+                event.type,
+                node.state,
+                attempt.state,
+            )
             return
         match event:
             case ExecutionStarted():
@@ -463,7 +467,7 @@ class RunOrchestrator:
         error: str,
     ) -> None:
         """Провал доказуемо мёртвой попытки: следующая попытка или FAILED узла."""
-        _finish(attempt, reason, error)
+        _fail(attempt, reason, error)
         node.error = error
         if should_retry(attempt.number, reason):
             await self._submit_attempt(session, run, node, number=attempt.number + 1)
@@ -558,7 +562,7 @@ async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUI
     return True
 
 
-def _last_check(attempt: ExecutionAttemptRow) -> UUID:
+def _last_check_id(attempt: ExecutionAttemptRow) -> UUID:
     return reconcile_id(attempt.attempt_id, attempt.reconcile_count)
 
 
@@ -569,14 +573,13 @@ def _mark_running(node: NodeRunRow, attempt: ExecutionAttemptRow) -> None:
     node.state = NodeState.RUNNING
 
 
-def _finish(
-    attempt: ExecutionAttemptRow, reason: AttemptReason | None = None, error: str | None = None
-) -> None:
-    """Терминальный итог попытки: без причины — успех."""
-    if reason is None:
-        attempt.state = AttemptState.SUCCEEDED
-    else:
-        attempt.state = AttemptState.LOST if reason == AttemptReason.LOST else AttemptState.FAILED
+def _succeed(attempt: ExecutionAttemptRow) -> None:
+    attempt.state = AttemptState.SUCCEEDED
+    attempt.finished_at = func.now()
+
+
+def _fail(attempt: ExecutionAttemptRow, reason: AttemptReason, error: str) -> None:
+    attempt.state = AttemptState.LOST if reason == AttemptReason.LOST else AttemptState.FAILED
     attempt.reason = reason
     attempt.error = error
     attempt.finished_at = func.now()
@@ -598,7 +601,7 @@ def _rejected(error: str) -> NodeChange:
     """Manifest отвергнут: попытка провалена без ретрая, причину ставит сам Orchestrator."""
 
     async def change(session: AsyncSession, node: NodeRunRow) -> None:
-        _finish(await _current_attempt(session, node), AttemptReason.OUTPUT_REJECTED, error)
+        _fail(await _current_attempt(session, node), AttemptReason.OUTPUT_REJECTED, error)
         node.state = NodeState.FAILED
         node.error = error
 
@@ -607,7 +610,8 @@ def _rejected(error: str) -> NodeChange:
 
 def _accepted(result: ExecutionResult, manifests: Mapping[str, Manifest]) -> NodeChange:
     async def change(session: AsyncSession, node: NodeRunRow) -> None:
-        _finish(await _current_attempt(session, node))
+        _succeed(await _current_attempt(session, node))
+        node.error = None
         for port, manifest in manifests.items():
             session.add(
                 NodeOutputRow(

@@ -48,6 +48,28 @@ def upgrade() -> None:
         schema=SCHEMA,
         postgresql_where=sa.text("state IN ('SUBMITTED', 'RUNNING')"),
     )
+    # NodeRun, запущенные до миграции: Current Attempt становится попыткой №1,
+    # её SubmitExecution берётся из outbox.
+    op.execute(
+        f"""
+        INSERT INTO {SCHEMA}.execution_attempts
+            (attempt_id, node_run_id, number, state, reason, command, created_at)
+        SELECT n.current_attempt_id, n.id, 1,
+            CASE n.state
+                WHEN 'QUEUED' THEN 'SUBMITTED'
+                WHEN 'SUCCEEDED' THEN 'SUCCEEDED'
+                WHEN 'FAILED' THEN 'FAILED'
+                ELSE 'RUNNING'
+            END,
+            CASE n.state WHEN 'FAILED' THEN 'UNKNOWN' END,
+            o.payload, o.created_at
+        FROM {SCHEMA}.node_runs n
+        JOIN {SCHEMA}.outbox o
+            ON o.payload ->> 'type' = 'SubmitExecution'
+            AND (o.payload ->> 'attempt_id')::uuid = n.current_attempt_id
+        WHERE n.current_attempt_id IS NOT NULL
+        """
+    )
 
 
 def downgrade() -> None:

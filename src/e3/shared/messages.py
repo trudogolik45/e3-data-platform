@@ -57,7 +57,9 @@ class ReconcileExecution(_Envelope):
     payload: Submission
 
 
-ExecutionCommand = Annotated[SubmitExecution | ReconcileExecution, Field(discriminator="type")]
+type Command = SubmitExecution | ReconcileExecution
+
+ExecutionCommand = Annotated[Command, Field(discriminator="type")]
 
 _commands = TypeAdapter[ExecutionCommand](ExecutionCommand)
 
@@ -108,12 +110,19 @@ ExecutionEvent = Annotated[
 _events = TypeAdapter[ExecutionEvent](ExecutionEvent)
 
 
-type Command = SubmitExecution | ReconcileExecution
-
-
 def _attempt_event_id(command: Command, event: type[_Envelope]) -> UUID:
     """Одно и то же событие попытки всегда получает один и тот же id."""
     return uuid5(_EVENT_ID_NAMESPACE, f"{command.attempt_id}/{event.__name__}")
+
+
+def original_submission(command: ReconcileExecution) -> SubmitExecution:
+    """SubmitExecution проверяемой попытки: те же NodeRun, попытка и Submission."""
+    return SubmitExecution(
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
+        payload=command.payload,
+    )
 
 
 def reconcile_id(attempt_id: UUID, check: int) -> UUID:
@@ -173,5 +182,5 @@ def parse_event(raw: bytes) -> ExecutionEvent:
     return _events.validate_json(raw)
 
 
-def parse_command(raw: bytes) -> SubmitExecution | ReconcileExecution:
+def parse_command(raw: bytes) -> Command:
     return _commands.validate_json(raw)

@@ -4,7 +4,7 @@ import pytest
 
 from e3.execution.controller import ExecutionController
 from e3.execution.settings import ExecutionSettings
-from e3.execution.workload import FENCED_LABEL, Pod, WorkloadConfig
+from e3.execution.workload import COMMAND_ANNOTATION, FENCED_LABEL, Pod, WorkloadConfig
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
     ExecutionEvent,
@@ -12,6 +12,7 @@ from e3.shared.messages import (
     ExecutionSucceeded,
     Submission,
     SubmitExecution,
+    parse_command,
     reconcile,
 )
 from tests.fakes.spark_applications import InMemorySparkApplications
@@ -279,6 +280,9 @@ async def test_reconcile_of_vanished_attempt_fences_it_then_reports_lost() -> No
 
     fence = applications.items[name(submit)]
     assert fence["spec"]["suspend"] is True
+    original = parse_command(fence["metadata"]["annotations"][COMMAND_ANNOTATION].encode())
+    assert isinstance(original, SubmitExecution)
+    assert (original.attempt_id, original.payload) == (submit.attempt_id, submit.payload)
     assert fence["metadata"]["labels"][FENCED_LABEL] == "true"
     assert [event.type for event in events.sent] == ["ExecutionLost"]
 
