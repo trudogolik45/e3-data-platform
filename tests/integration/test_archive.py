@@ -1,12 +1,21 @@
 """Архивирование Dataset и Pipeline: из обращения уходят, уже созданные запуски работают."""
 
+import asyncio
+from typing import Any
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
+from e3.settings import Settings
 from tests.integration.conftest import RUN_CSV, Api, Plant, run_request
+from tests.integration.test_slot_defaults import pipeline_with_defaults, uploaded_version
 
 pytestmark = pytest.mark.integration
+
+LOCK_WAIT_POLLS = 100
 
 
 async def test_archiving_dataset_twice_succeeds(api: Api) -> None:
@@ -122,3 +131,87 @@ async def test_run_created_before_archiving_still_publishes(plant: Plant) -> Non
 
     assert (await plant.api.run(run_id))["state"] == "SUCCEEDED"
     assert len(await plant.api.versions(UUID(target))) == 1
+
+
+async def wait_for_lock_or_done(engine: AsyncEngine, task: asyncio.Task[Any]) -> None:
+    """Ждёт, пока `task` встанет в очередь на блокировку строки или закончится."""
+    query = text(
+        "SELECT count(*) FROM pg_stat_activity"
+        " WHERE wait_event_type = 'Lock' AND datname = current_database()"
+    )
+    for _ in range(LOCK_WAIT_POLLS):
+        async with engine.connect() as probe:
+            if task.done() or await probe.scalar(query):
+                return
+        await asyncio.sleep(0.05)
+    raise TimeoutError("запуск не дошёл ни до блокировки, ни до ответа")
+
+
+async def start_during_archiving(
+    api: Api, settings: Settings, body: dict[str, Any], archive_sql: str, row_id: str
+) -> httpx.Response:
+    """Создаёт запуск, пока архивация строки `row_id` идёт в открытой транзакции."""
+    engine = create_async_engine(settings.database_url)
+    try:
+        async with engine.connect() as archiving:
+            await archiving.execute(text(archive_sql), {"id": row_id})
+            start = asyncio.create_task(api.start_run(body, key=str(uuid4())))
+            await wait_for_lock_or_done(engine, start)
+            await archiving.commit()
+        return await start
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.parametrize("slot", ["inputs", "outputs"])
+async def test_run_racing_dataset_archiving_is_rejected(
+    api: Api, settings: Settings, slot: str
+) -> None:
+    body = await run_request(api)
+    dataset_id = next(iter(body[slot].values()))["dataset_id"]
+
+    response = await start_during_archiving(
+        api,
+        settings,
+        body,
+        "UPDATE catalog.datasets SET archived = true WHERE id = :id",
+        dataset_id,
+    )
+
+    assert response.status_code == 422, response.text
+    assert "в архиве" in response.json()["detail"]
+
+
+async def test_run_racing_pipeline_archiving_is_conflict(api: Api, settings: Settings) -> None:
+    body = await run_request(api)
+
+    response = await start_during_archiving(
+        api,
+        settings,
+        body,
+        "UPDATE pipelines.pipelines SET archived = true WHERE id = :id",
+        body["pipeline_id"],
+    )
+
+    assert response.status_code == 409, response.text
+
+
+async def test_repeated_run_after_archiving_returns_original(api: Api) -> None:
+    source, target = await api.new_dataset(f"s-{uuid4()}"), await api.new_dataset(f"r-{uuid4()}")
+    first_version = await uploaded_version(api, source)
+    body = await pipeline_with_defaults(
+        api, {"dataset_id": str(source), "version": "latest"}, {"dataset_id": str(target)}
+    )
+    key = str(uuid4())
+    original = await api.start_run(body, key=key)
+    await uploaded_version(api, source)
+    await api.archive_dataset(source)
+    await api.archive_dataset(target)
+    await api.archive_pipeline(UUID(body["pipeline_id"]))
+
+    repeated = await api.start_run(body, key=key)
+
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()["pipeline_run_id"] == original.json()["pipeline_run_id"]
+    assert repeated.json()["inputs"]["source"]["version_id"] == first_version
+    assert repeated.json()["outputs"] == original.json()["outputs"]

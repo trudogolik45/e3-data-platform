@@ -1,10 +1,11 @@
 """Создание, поиск и архивирование Dataset внутри Project."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -51,6 +52,20 @@ async def get_dataset(session: AsyncSession, dataset_id: UUID) -> Dataset:
     if row is None:
         raise DatasetNotFound(str(dataset_id))
     return _to_dataset(row)
+
+
+async def lock_datasets(session: AsyncSession, dataset_ids: Iterable[UUID]) -> dict[UUID, Dataset]:
+    """Блокирует строки на чтение до конца транзакции: архивация ждёт её конца.
+
+    Строки берутся по возрастанию id, чтобы встречные блокировки не сцепились.
+    """
+    rows = await session.scalars(
+        select(DatasetRow)
+        .where(DatasetRow.id.in_(set(dataset_ids)))
+        .order_by(DatasetRow.id)
+        .with_for_update(read=True)
+    )
+    return {row.id: _to_dataset(row) for row in rows}
 
 
 async def archive_dataset(session: AsyncSession, dataset_id: UUID) -> Dataset:
