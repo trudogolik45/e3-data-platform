@@ -8,9 +8,14 @@
 ## Considered Options
 
 - Запускать новую попытку, не дожидаясь остановки старой (данные изолированы по `attempt_id`): ретраи быстрее, но временно работают два Spark-задания и сложнее рассуждать о состоянии. Отклонено.
+- Опираться на порядок команд в Kafka, чтобы опоздавшая `SubmitExecution` не пришла после проверки: outbox этот порядок не гарантирует. Отклонено.
+- Хранить Attempt Fence отдельным объектом рядом с `SparkApplication`: между проверкой запрета и созданием задания остаётся щель. Отклонено в пользу одного объекта с тем же именем.
 
 ## Consequences
 
-- Молчащую попытку reconciliation проверяет по таймауту, а не объявляет мёртвой. `LOST` ставится, только когда Execution Controller доказал все три условия. Живая, но зависшая попытка в MVP может висеть бесконечно.
-- Пропавший `SparkApplication` Controller замещает Attempt Fence — ресурсом с тем же именем и `spec.suspend: true`. Опоздавшая команда запуска упирается в занятое имя, и мёртвая попытка не оживает.
+- Таймаут не объявляет попытку `LOST`: он только запускает Reconciliation. `LOST` ставит Run Orchestrator по событию `ExecutionLost`, которое Execution Controller шлёт после Attempt Fence и проверки всех трёх условий.
+- Живая, но зависшая попытка в MVP может висеть бесконечно.
+- Attempt Fence реализован через `SparkApplication` с `spec.suspend: true`: на Spark Operator 2.5.2 такой ресурс уходит в `SUSPENDED` и не запускает ни driver, ни executor (e2e `test_suspended_attempt_fence_starts_no_pods`).
+- Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST` — максимум три повторные попытки. `NO_RESULT`, `OUTPUT_REJECTED` и `UNKNOWN` не ретраятся.
+- Итог попытки фиксируется один раз: `ExecutionSucceeded` только сохраняет результат, а `SUCCEEDED` или `FAILED` ставит Run Orchestrator после проверки manifest.
 - Один NodeRun имеет не более одного принятого результата, сколько бы ни было попыток и повторных доставок команд.
