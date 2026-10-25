@@ -37,6 +37,10 @@ class Catalog:
         async with self._sessions() as session:
             return await datasets.get_dataset(session, dataset_id)
 
+    async def archive_dataset(self, dataset_id: UUID) -> Dataset:
+        async with self._sessions.begin() as session:
+            return await datasets.archive_dataset(session, dataset_id)
+
     async def start_upload(self, dataset_id: UUID, *, checksum_sha256: str) -> StartedUpload:
         return await self._uploads.start(dataset_id, checksum_sha256=checksum_sha256)
 
@@ -49,6 +53,10 @@ class Catalog:
     async def list_versions(self, dataset_id: UUID) -> list[DatasetVersion]:
         async with self._sessions() as session:
             return await versions.list_versions(session, dataset_id)
+
+    async def latest_version(self, dataset_id: UUID) -> DatasetVersion | None:
+        async with self._sessions() as session:
+            return await versions.latest_version(session, dataset_id)
 
     async def resolve(self, version_id: UUID) -> DatasetVersion:
         async with self._sessions() as session:

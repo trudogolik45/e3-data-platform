@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from e3.identity import Principal, ProjectAccessDenied, authorize_project, current_principal
-from e3.pipelines import PipelineNotFound
+from e3.pipelines import PipelineArchived, PipelineNotFound
 from e3.runs.attempts import AttemptReason, AttemptState
 from e3.runs.bindings import InputBinding, OutputBinding, RunRequest, RunRequestInvalid
 from e3.runs.nodes import NodeKind
@@ -93,6 +93,8 @@ async def start_run(
         run = await orchestrator.start(principal, body, idempotency_key=idempotency_key)
     except PipelineNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Pipeline не найден") from None
+    except PipelineArchived:
+        raise HTTPException(status.HTTP_409_CONFLICT, "Pipeline в архиве") from None
     except ProjectAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
     except RunRequestInvalid as invalid:

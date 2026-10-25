@@ -35,7 +35,7 @@ def create_app(settings: Settings, *, storage: ObjectStorage | None = None) -> F
         upload_url_ttl_seconds=settings.upload_url_ttl_seconds,
     )
     app.state.blocks = blocks.BlockRegistry(sessions)
-    app.state.pipelines = pipelines.PipelineService(sessions, app.state.blocks)
+    app.state.pipelines = pipelines.PipelineService(sessions, app.state.blocks, app.state.catalog)
     app.state.runs = runs.RunOrchestrator(
         sessions,
         datasets=app.state.catalog,
