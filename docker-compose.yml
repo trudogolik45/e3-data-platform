@@ -56,14 +56,32 @@ services:
         aws --endpoint-url http://minio:9000 s3api head-bucket --bucket e3-lake 2>/dev/null
         || aws --endpoint-url http://minio:9000 s3api create-bucket --bucket e3-lake
 
+  oidc:
+    # Только для локальной разработки и e2e: выдаёт JWT любому client_id без пароля.
+    # Токен: POST http://localhost:8080/e3/token, grant_type=client_credentials, client_id=<логин>.
+    image: ghcr.io/navikt/mock-oauth2-server:6.1.3
+    environment:
+      JSON_CONFIG: >
+        {"tokenCallbacks": [{"issuerId": "e3", "tokenExpiry": 3600, "requestMappings": [
+          {"requestParam": "client_id", "match": "*", "claims": {
+            "sub": "$${clientId}", "aud": ["e3-api"],
+            "email": "$${clientId}@e3.local", "email_verified": true}}]}]}
+    ports: ["8080:8080"]
+
   api:
     build: .
     depends_on:
       postgres: { condition: service_healthy }
       kafka: { condition: service_healthy }
       minio-init: { condition: service_completed_successfully }
+      oidc: { condition: service_started }
     environment:
       E3_ENVIRONMENT: dev
+      E3_AUTH_MODE: oidc
+      # `iss` — адрес, по которому токен берут с хоста; ключи API читает изнутри сети compose.
+      E3_OIDC_ISSUER: http://localhost:8080/e3
+      E3_OIDC_AUDIENCE: e3-api
+      E3_OIDC_JWKS_URL: http://oidc:8080/e3/jwks
       E3_DATABASE_URL: postgresql+asyncpg://e3:e3@postgres:5432/e3
       E3_S3_ENDPOINT_URL: http://minio:9000
       E3_S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
