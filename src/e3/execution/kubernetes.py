@@ -48,6 +48,15 @@ class KubernetesSparkApplications:
             return None
         return found
 
+    async def delete(self, name: str) -> None:
+        try:
+            await self._api.delete_namespaced_custom_object(
+                GROUP, VERSION, self._namespace, PLURAL, name
+            )
+        except ApiException as error:
+            if error.status != NOT_FOUND:
+                raise
+
     async def unreported(self) -> list[dict[str, Any]]:
         listed: dict[str, Any] = await self._api.list_namespaced_custom_object(
             GROUP,

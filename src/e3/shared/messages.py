@@ -4,7 +4,7 @@
 Ключ сообщения — `node_run_id`: события одного NodeRun идут по порядку.
 `event_id` события попытки выводится из `attempt_id` и `type`: повторно
 отправленное событие получает тот же id, и inbox получателя его отбрасывает.
-`ReconcileExecution` получает id из `attempt_id` и номера проверки.
+`ReconcileExecution` и `CancelExecution` получают id из `attempt_id` и номера проверки.
 """
 
 from datetime import UTC, datetime
@@ -57,7 +57,14 @@ class ReconcileExecution(_Envelope):
     payload: Submission
 
 
-type Command = SubmitExecution | ReconcileExecution
+class CancelExecution(_Envelope):
+    """Просьба остановить попытку и доказать её смерть; `payload` — исходная Submission."""
+
+    type: Literal["CancelExecution"] = "CancelExecution"
+    payload: Submission
+
+
+type Command = SubmitExecution | ReconcileExecution | CancelExecution
 
 ExecutionCommand = Annotated[Command, Field(discriminator="type")]
 
@@ -102,8 +109,15 @@ class ExecutionLost(_Envelope):
     payload: Empty = Field(default_factory=Empty)
 
 
+class ExecutionCancelled(_Envelope):
+    """Попытка остановлена по CancelExecution и доказуемо мертва: на её месте Attempt Fence."""
+
+    type: Literal["ExecutionCancelled"] = "ExecutionCancelled"
+    payload: Empty = Field(default_factory=Empty)
+
+
 ExecutionEvent = Annotated[
-    ExecutionStarted | ExecutionSucceeded | ExecutionFailed | ExecutionLost,
+    ExecutionStarted | ExecutionSucceeded | ExecutionFailed | ExecutionLost | ExecutionCancelled,
     Field(discriminator="type"),
 ]
 
@@ -115,7 +129,7 @@ def _attempt_event_id(command: Command, event: type[_Envelope]) -> UUID:
     return uuid5(_EVENT_ID_NAMESPACE, f"{command.attempt_id}/{event.__name__}")
 
 
-def original_submission(command: ReconcileExecution) -> SubmitExecution:
+def original_submission(command: ReconcileExecution | CancelExecution) -> SubmitExecution:
     """SubmitExecution проверяемой попытки: те же NodeRun, попытка и Submission."""
     return SubmitExecution(
         node_run_id=command.node_run_id,
@@ -133,6 +147,21 @@ def reconcile(command: Command, check: int) -> ReconcileExecution:
     """Проверка номер `check` попытки: у каждой свой id, повтор той же — тот же."""
     return ReconcileExecution(
         event_id=reconcile_id(command.attempt_id, check),
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
+        payload=command.payload,
+    )
+
+
+def cancel_id(attempt_id: UUID, check: int) -> UUID:
+    return uuid5(attempt_id, f"cancel/{check}")
+
+
+def cancel(command: Command, check: int) -> CancelExecution:
+    """Отмена номер `check` попытки: у каждой свой id, повтор той же — тот же."""
+    return CancelExecution(
+        event_id=cancel_id(command.attempt_id, check),
         node_run_id=command.node_run_id,
         attempt_id=command.attempt_id,
         trace_id=command.trace_id,
@@ -172,6 +201,15 @@ def failed(command: Command, error: str, reason: FailureReason) -> ExecutionFail
 def lost(command: Command) -> ExecutionLost:
     return ExecutionLost(
         event_id=_attempt_event_id(command, ExecutionLost),
+        node_run_id=command.node_run_id,
+        attempt_id=command.attempt_id,
+        trace_id=command.trace_id,
+    )
+
+
+def cancelled(command: Command) -> ExecutionCancelled:
+    return ExecutionCancelled(
+        event_id=_attempt_event_id(command, ExecutionCancelled),
         node_run_id=command.node_run_id,
         attempt_id=command.attempt_id,
         trace_id=command.trace_id,

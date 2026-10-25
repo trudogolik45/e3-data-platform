@@ -5,6 +5,8 @@
 - `start` создаёт PipelineRun и его NodeRun в PENDING;
 - `dispatch_pending` запускает готовые узлы PENDING-запусков: BLOCK — командой
   SubmitExecution через outbox, Publish Dataset — переводом в RUNNING;
+- `cancel` запрашивает отмену: работающие попытки получают CancelExecution, итог
+  CANCELLED фиксируется только по доказанной остановке (так же гасит узлы Fail-fast);
 - `handle_event` применяет событие Execution Plane к Current Attempt; провал
   с ретраебельной причиной сразу назначает следующую попытку (ADR-0003);
 - `finalize_pending` проверяет manifest NodeRun в FINALIZING и принимает NodeOutput;
@@ -18,7 +20,7 @@
 """
 
 import logging
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -62,6 +64,7 @@ from e3.shared.contracts import (
 )
 from e3.shared.manifest import DataFormat, DataSchema, Manifest
 from e3.shared.messages import (
+    ExecutionCancelled,
     ExecutionEvent,
     ExecutionFailed,
     ExecutionLost,
@@ -69,6 +72,8 @@ from e3.shared.messages import (
     ExecutionSucceeded,
     Submission,
     SubmitExecution,
+    cancel,
+    cancel_id,
     reconcile,
     reconcile_id,
 )
@@ -79,6 +84,10 @@ log = logging.getLogger(__name__)
 DISPATCH_BATCH = 10
 # NodeRun, ждущий итога Current Attempt от Execution Plane.
 AWAITING_OUTCOME = frozenset({NodeState.QUEUED, NodeState.RUNNING})
+# NodeRun, у которого Current Attempt ещё может прислать итог.
+OPEN_ATTEMPT = AWAITING_OUTCOME | {NodeState.CANCELLING}
+# Запуск закончился: отменять нечего.
+FINISHED = frozenset({RunState.SUCCEEDED, RunState.FAILED})
 
 
 class PipelineRunNotFound(Exception):
@@ -87,6 +96,10 @@ class PipelineRunNotFound(Exception):
 
 class IdempotencyConflict(Exception):
     """`Idempotency-Key` уже использован с другим телом запроса."""
+
+
+class RunNotCancellable(Exception):
+    """PipelineRun уже завершился SUCCEEDED или FAILED."""
 
 
 @dataclass(frozen=True)
@@ -99,6 +112,7 @@ class PipelineRun:
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
     created_at: datetime
+    failed_node_run_id: UUID | None
 
 
 @dataclass(frozen=True)
@@ -242,6 +256,20 @@ class RunOrchestrator:
                 await self._advance(session, run)
             return len(runs)
 
+    async def cancel(self, pipeline_run_id: UUID) -> PipelineRun:
+        """Запрашивает отмену; повтор и отмена во время Fail-fast ничего не меняют."""
+        async with self._sessions.begin() as session:
+            run = await session.get(PipelineRunRow, pipeline_run_id, with_for_update=True)
+            if run is None:
+                raise PipelineRunNotFound(pipeline_run_id)
+            if run.state in FINISHED:
+                raise RunNotCancellable(pipeline_run_id)
+            if run.state not in {RunState.PENDING, RunState.RUNNING} or run.failed_node_run_id:
+                return _to_run(run)
+            run.state = RunState.CANCELLING
+            await self._advance(session, run)
+            return _to_run(run)
+
     async def handle_event(self, event: ExecutionEvent) -> None:
         """Применяет событие один раз и только к Current Attempt и допустимому переходу."""
         async with self._sessions.begin() as session:
@@ -278,32 +306,32 @@ class RunOrchestrator:
         """
         async with self._sessions.begin() as session:
             quiet = await self._quiet_attempts(session)
-            waiting = await unsent(session, [_last_check_id(a) for a in quiet if a.reconcile_count])
-            due = [a for a in quiet if _last_check_id(a) not in waiting]
-            for attempt in due:
-                attempt.reconcile_count += 1
-                attempt.reconcile_requested_at = func.now()
-                command = SubmitExecution.model_validate(attempt.command)
-                enqueue(session, reconcile(command, attempt.reconcile_count))
+            sent = [_last_check_id(a, s) for a, s in quiet if a.reconcile_count]
+            waiting = await unsent(session, sent)
+            due = [(a, s) for a, s in quiet if _last_check_id(a, s) not in waiting]
+            for attempt, node_state in due:
+                _request_check(session, attempt, node_state)
             return len(due)
 
-    async def _quiet_attempts(self, session: AsyncSession) -> list[ExecutionAttemptRow]:
+    async def _quiet_attempts(
+        self, session: AsyncSession
+    ) -> list[tuple[ExecutionAttemptRow, NodeState]]:
         last_news = func.greatest(
             ExecutionAttemptRow.created_at,
             ExecutionAttemptRow.started_at,
             ExecutionAttemptRow.reconcile_requested_at,
         )
-        rows = await session.scalars(
-            select(ExecutionAttemptRow)
+        rows = await session.execute(
+            select(ExecutionAttemptRow, NodeRunRow.state)
             .join(NodeRunRow, NodeRunRow.current_attempt_id == ExecutionAttemptRow.attempt_id)
             .where(
                 ExecutionAttemptRow.state.in_(LIVE),
-                NodeRunRow.state.in_(AWAITING_OUTCOME),
+                NodeRunRow.state.in_(OPEN_ATTEMPT),
                 last_news < func.now() - self._reconcile_after,
             )
             .with_for_update(of=ExecutionAttemptRow, skip_locked=True)
         )
-        return list(rows)
+        return [(attempt, NodeState(state)) for attempt, state in rows]
 
     async def _create(
         self,
@@ -351,13 +379,18 @@ class RunOrchestrator:
                 select(NodeRunRow).where(NodeRunRow.pipeline_run_id == run.id).with_for_update()
             )
         ).all()
-        decision = plan([progress(node) for node in nodes])
+        cancelling = run.state in {RunState.CANCELLING, RunState.CANCELLED}
+        decision = plan([progress(node) for node in nodes], cancelling=cancelling)
         by_id = {node.id: node for node in nodes}
         for node_run_id in decision.skip:
             by_id[node_run_id].state = NodeState.SKIPPED
+        for node_run_id in decision.cancel:
+            await _cancel_node(session, by_id[node_run_id])
         for node_run_id in decision.start:
             await self._start_node(session, run, by_id[node_run_id])
         run.state = decision.run_state
+        if run.failed_node_run_id is None:
+            run.failed_node_run_id = _first_failed(nodes)
 
     async def _start_node(
         self, session: AsyncSession, run: PipelineRunRow, node: NodeRunRow
@@ -435,7 +468,7 @@ class RunOrchestrator:
 
         `Succeeded` попытку не завершает: итог ставит проверка manifest в FINALIZING.
         """
-        if node.state not in AWAITING_OUTCOME or attempt.state not in LIVE:
+        if node.state not in OPEN_ATTEMPT or attempt.state not in LIVE:
             log.info(
                 "событие %s пропущено: NodeRun в %s, попытка в %s",
                 event.type,
@@ -453,9 +486,14 @@ class RunOrchestrator:
             case ExecutionFailed():
                 reason = AttemptReason(event.payload.reason)
                 await self._end_attempt(session, run, node, attempt, reason, event.payload.error)
+            case ExecutionLost() | ExecutionCancelled() if node.state == NodeState.CANCELLING:
+                _mark_cancelled(node, attempt)
+                await self._advance(session, run)
             case ExecutionLost():
                 error = "попытка потеряна: SparkApplication пропал, pod'ов не осталось"
                 await self._end_attempt(session, run, node, attempt, AttemptReason.LOST, error)
+            case ExecutionCancelled():
+                log.warning("CancelExecution попытке %s не посылали", attempt.attempt_id)
 
     async def _end_attempt(
         self,
@@ -466,10 +504,13 @@ class RunOrchestrator:
         reason: AttemptReason,
         error: str,
     ) -> None:
-        """Провал доказуемо мёртвой попытки: следующая попытка или FAILED узла."""
+        """Провал доказуемо мёртвой попытки: следующая попытка или FAILED узла.
+
+        Отменяемый узел не ретраится: запуск уже останавливается.
+        """
         _fail(attempt, reason, error)
         node.error = error
-        if should_retry(attempt.number, reason):
+        if node.state != NodeState.CANCELLING and should_retry(attempt.number, reason):
             await self._submit_attempt(session, run, node, number=attempt.number + 1)
             return
         node.state = NodeState.FAILED
@@ -562,15 +603,48 @@ async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUI
     return True
 
 
-def _last_check_id(attempt: ExecutionAttemptRow) -> UUID:
-    return reconcile_id(attempt.attempt_id, attempt.reconcile_count)
+def _cancelling(node_state: NodeState) -> bool:
+    """Отменяемому узлу по таймауту повторяется CancelExecution, а не проверка."""
+    return node_state == NodeState.CANCELLING
+
+
+def _last_check_id(attempt: ExecutionAttemptRow, node_state: NodeState) -> UUID:
+    check_id = cancel_id if _cancelling(node_state) else reconcile_id
+    return check_id(attempt.attempt_id, attempt.reconcile_count)
+
+
+def _request_check(
+    session: AsyncSession, attempt: ExecutionAttemptRow, node_state: NodeState
+) -> None:
+    """ReconcileExecution или CancelExecution с общим счётчиком: повтор по тому же таймауту."""
+    attempt.reconcile_count += 1
+    attempt.reconcile_requested_at = func.now()
+    command = SubmitExecution.model_validate(attempt.command)
+    check = cancel if _cancelling(node_state) else reconcile
+    enqueue(session, check(command, attempt.reconcile_count))
+
+
+async def _cancel_node(session: AsyncSession, node: NodeRunRow) -> None:
+    node.state = NodeState.CANCELLING
+    _request_check(session, await _current_attempt(session, node), NodeState.CANCELLING)
+
+
+def _first_failed(nodes: Sequence[NodeRunRow]) -> UUID | None:
+    return next((node.id for node in nodes if node.state == NodeState.FAILED), None)
+
+
+def _mark_cancelled(node: NodeRunRow, attempt: ExecutionAttemptRow) -> None:
+    attempt.state = AttemptState.CANCELLED
+    attempt.finished_at = func.now()
+    node.state = NodeState.CANCELLED
 
 
 def _mark_running(node: NodeRunRow, attempt: ExecutionAttemptRow) -> None:
     if attempt.state == AttemptState.SUBMITTED:
         attempt.state = AttemptState.RUNNING
         attempt.started_at = func.now()
-    node.state = NodeState.RUNNING
+    if node.state != NodeState.CANCELLING:
+        node.state = NodeState.RUNNING
 
 
 def _succeed(attempt: ExecutionAttemptRow) -> None:
@@ -690,6 +764,7 @@ def _to_run(row: PipelineRunRow) -> PipelineRun:
         inputs={slot: InputBinding.model_validate(b) for slot, b in row.inputs.items()},
         outputs={slot: OutputBinding.model_validate(b) for slot, b in row.outputs.items()},
         created_at=row.created_at,
+        failed_node_run_id=row.failed_node_run_id,
     )
 
 

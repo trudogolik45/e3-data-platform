@@ -1,4 +1,4 @@
-"""E2E на kind: Attempt Fence и ретрай пропавшей попытки (ADR-0003).
+"""E2E на kind: Attempt Fence, ретрай пропавшей попытки (ADR-0003) и отмена запуска.
 
 Запускает `scripts/e2e.sh` с коротким `E3_RECONCILE_AFTER_SECONDS`, чтобы
 reconciliation успела за время теста. Без `E3_E2E_API_URL` тесты пропускаются.
@@ -25,6 +25,7 @@ from e3.execution.workload import (
     PLURAL,
     VERSION,
     attempt_fence,
+    is_cancelled,
     is_fence,
     workload_name,
 )
@@ -150,6 +151,30 @@ async def test_vanished_attempt_is_fenced_then_retried_to_success(
         node = await _read(api, run_id)
     assert run["state"] == "SUCCEEDED", node
     assert [(a["number"], a["state"]) for a in node["attempts"]] == [(1, "LOST"), (2, "SUCCEEDED")]
+
+
+async def test_cancel_mid_spark_replaces_attempt_with_fence_and_ends_cancelled(
+    cluster: tuple[KubernetesSparkApplications, ExecutionController],
+) -> None:
+    applications, _ = cluster
+    assert API_URL is not None
+    async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
+        api = Api(client, Settings.model_fields["dev_project_id"].default)
+        run_id = await _start(api)
+        node = await eventually(lambda: _read(api, run_id), lambda n: n["state"] == "RUNNING")
+        attempt_id = UUID(node["attempt_id"])
+
+        cancelled = await api.cancel_run(run_id)
+        assert (cancelled.status_code, cancelled.json()["state"]) == (202, "CANCELLING")
+        run = await eventually(
+            lambda: api.run(run_id), lambda r: r["state"] not in {"RUNNING", "CANCELLING"}
+        )
+        node = await _read(api, run_id)
+    fence = await applications.get(workload_name(attempt_id))
+    assert run["state"] == "CANCELLED", node
+    assert fence is not None and is_fence(fence) and is_cancelled(fence)
+    assert await applications.pods(attempt_id) == []
+    assert [a["state"] for a in node["attempts"]] == ["CANCELLED"]
 
 
 async def _start(api: Api) -> str:

@@ -102,6 +102,7 @@ def test_json_schema_covers_all_contracts() -> None:
         "Manifest",
         "SubmitExecution",
         "ReconcileExecution",
+        "CancelExecution",
         "ExecutionCommand",
         "ExecutionEvent",
     }

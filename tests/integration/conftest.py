@@ -4,6 +4,7 @@ import hashlib
 import socket
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -15,6 +16,8 @@ from alembic import command
 from alembic.config import Config
 from mypy_boto3_s3 import S3Client
 from pydantic import SecretStr
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.community.minio import MinioContainer
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
@@ -33,7 +36,13 @@ from e3.settings import Settings
 from e3.shared.messages import ExecutionEvent, SubmitExecution
 from e3.shared.storage import ObjectStorage
 from tests.fakes.execution_controller import FakeExecutionController
-from tests.integration.graphs import block_spec, port, read_filter_aggregate_graph, read_graph
+from tests.integration.graphs import (
+    block_spec,
+    port,
+    read_beside_side_graph,
+    read_filter_aggregate_graph,
+    read_graph,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -240,6 +249,9 @@ class Api:
         assert response.status_code == 200, response.text
         return response.json()
 
+    async def cancel_run(self, run_id: str) -> httpx.Response:
+        return await self.client.post(f"/api/v1/pipeline-runs/{run_id}/cancel")
+
     async def run_nodes(self, run_id: str) -> dict[str, dict[str, Any]]:
         """NodeRun запуска по id узла графа."""
         response = await self.client.get(f"/api/v1/pipeline-runs/{run_id}/nodes")
@@ -295,6 +307,11 @@ async def publish_pipeline(api: Api, graph: dict[str, Any]) -> tuple[str, int]:
 
 async def new_read_pipeline(api: Api) -> tuple[str, int]:
     return await publish_pipeline(api, read_graph(await new_block(api, "read", "data")))
+
+
+async def new_read_beside_side_pipeline(api: Api) -> tuple[str, int]:
+    read, side = await new_block(api, "read", "data"), await new_block(api, "side", "data")
+    return await publish_pipeline(api, read_beside_side_graph(read, side))
 
 
 async def new_read_filter_aggregate_pipeline(api: Api) -> tuple[str, int]:
@@ -428,6 +445,30 @@ EVENT_POLLS = 50
 async def drain(step: Callable[[], Awaitable[int]]) -> None:
     while await step():
         pass
+
+
+async def age(plant: Plant, attempt_id: UUID, by: timedelta) -> None:
+    """Сдвигает часы попытки назад, будто с её последней новости прошло `by`."""
+    engine = create_async_engine(plant.settings.database_url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE runs.execution_attempts"
+                    " SET created_at = created_at - CAST(:by AS interval),"
+                    " started_at = started_at - CAST(:by AS interval),"
+                    " reconcile_requested_at = reconcile_requested_at - CAST(:by AS interval)"
+                    " WHERE attempt_id = :attempt_id"
+                ),
+                {"by": by, "attempt_id": attempt_id},
+            )
+    finally:
+        await engine.dispose()
+
+
+def past_timeout(plant: Plant) -> timedelta:
+    """Чуть больше таймаута reconciliation стенда."""
+    return timedelta(seconds=plant.settings.reconcile_after_seconds + 1)
 
 
 @pytest.fixture

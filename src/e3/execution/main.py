@@ -1,9 +1,9 @@
 """`e3-execution-controller` — процесс Execution Plane.
 
-Читает `SubmitExecution` и `ReconcileExecution` из `commands.v1`, создаёт
-SparkApplication или Attempt Fence и шлёт события попыток в `events.v1`. Offset
-команды коммитится только после её обработки: падение посреди даёт повтор, а
-повтор упирается в то же имя ресурса.
+Читает `SubmitExecution`, `ReconcileExecution` и `CancelExecution` из `commands.v1`,
+создаёт или удаляет SparkApplication, ставит Attempt Fence и шлёт события попыток
+в `events.v1`. Offset команды коммитится только после её обработки: падение
+посреди даёт повтор, а повтор упирается в то же имя ресурса.
 """
 
 import asyncio
