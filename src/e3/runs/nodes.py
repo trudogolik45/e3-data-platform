@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from pydantic import TypeAdapter
 
 from e3.pipelines import BlockNode, BlockRef, InputSlotRef, NodePort, PipelineGraph
-from e3.runs.bindings import RunRequest
+from e3.runs.bindings import Bindings
 from e3.runs.models import NodeRunRow
 from e3.runs.progress import NodeProgress, NodeState
 from e3.shared.contracts import BlockSpec, DataRef, DatasetVersionRef, NodeOutputRef
@@ -27,11 +27,11 @@ class NodeKind(StrEnum):
 def build_node_runs(
     pipeline_run_id: UUID,
     graph: PipelineGraph,
-    request: RunRequest,
+    bindings: Bindings,
     specs: Mapping[BlockRef, BlockSpec],
 ) -> list[NodeRunRow]:
     ids = {node.id: uuid4() for node in graph.nodes}
-    inputs = _wire_inputs(graph, request, ids)
+    inputs = _wire_inputs(graph, bindings, ids)
     rows: list[NodeRunRow] = []
     for node in graph.nodes:
         row = NodeRunRow(
@@ -51,7 +51,7 @@ def build_node_runs(
             row.output_ports = [port.name for port in spec.outputs]
         else:
             row.kind = NodeKind.SYSTEM
-            row.target_dataset_id = request.outputs[node.output_slot].dataset_id
+            row.target_dataset_id = bindings.outputs[node.output_slot].dataset_id
         rows.append(row)
     return rows
 
@@ -69,18 +69,18 @@ def progress(row: NodeRunRow) -> NodeProgress:
 
 
 def _wire_inputs(
-    graph: PipelineGraph, request: RunRequest, ids: Mapping[str, UUID]
+    graph: PipelineGraph, bindings: Bindings, ids: Mapping[str, UUID]
 ) -> dict[str, dict[str, DataRef]]:
     inputs: dict[str, dict[str, DataRef]] = {node.id: {} for node in graph.nodes}
     for edge in graph.edges:
-        inputs[edge.target.node][edge.target.port] = _source_ref(edge.source, request, ids)
+        inputs[edge.target.node][edge.target.port] = _source_ref(edge.source, bindings, ids)
     return inputs
 
 
 def _source_ref(
-    source: NodePort | InputSlotRef, request: RunRequest, ids: Mapping[str, UUID]
+    source: NodePort | InputSlotRef, bindings: Bindings, ids: Mapping[str, UUID]
 ) -> DataRef:
     if isinstance(source, InputSlotRef):
-        binding = request.inputs[source.slot]
+        binding = bindings.inputs[source.slot]
         return DatasetVersionRef(dataset_id=binding.dataset_id, version_id=binding.version_id)
     return NodeOutputRef(node_run_id=ids[source.node], port=source.port)

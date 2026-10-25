@@ -5,6 +5,7 @@
 """
 
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,8 +16,34 @@ class _Frozen(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
 
-class Slot(_Frozen):
+class ExactVersion(_Frozen):
+    """Значение Input Slot по умолчанию: точная DatasetVersion."""
+
+    dataset_id: UUID
+    version_id: UUID
+
+
+class LatestVersion(_Frozen):
+    """Значение Input Slot по умолчанию: последняя версия Dataset на момент запуска."""
+
+    dataset_id: UUID
+    version: Literal["latest"]
+
+
+class TargetDataset(_Frozen):
+    """Значение Output Slot по умолчанию: целевой Dataset."""
+
+    dataset_id: UUID
+
+
+class InputSlot(_Frozen):
     name: str = Field(min_length=1)
+    default: ExactVersion | LatestVersion | None = None
+
+
+class OutputSlot(_Frozen):
+    name: str = Field(min_length=1)
+    default: TargetDataset | None = None
 
 
 class BlockRef(_Frozen):
@@ -64,8 +91,8 @@ class Edge(_Frozen):
 
 
 class PipelineGraph(_Frozen):
-    input_slots: list[Slot] = Field(default_factory=list[Slot])
-    output_slots: list[Slot] = Field(default_factory=list[Slot])
+    input_slots: list[InputSlot] = Field(default_factory=list[InputSlot])
+    output_slots: list[OutputSlot] = Field(default_factory=list[OutputSlot])
     nodes: list[Node] = Field(default_factory=list[Node])
     edges: list[Edge] = Field(default_factory=list[Edge])
 

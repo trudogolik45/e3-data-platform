@@ -36,17 +36,19 @@ from e3.identity import Principal, authorize_project
 from e3.pipelines import (
     PUBLISH_INPUT_PORT,
     BlockRef,
+    PipelineArchived,
     PipelineGraph,
     PipelineService,
     PipelineVersionNotFound,
 )
 from e3.runs.attempts import LIVE, AttemptReason, AttemptState, should_retry
 from e3.runs.bindings import (
+    Bindings,
     InputBinding,
     OutputBinding,
     RunRequest,
     RunRequestInvalid,
-    check_bindings,
+    resolve_bindings,
 )
 from e3.runs.finalization import OutputRejected, execution_prefix, verify_outputs
 from e3.runs.models import ExecutionAttemptRow, NodeOutputRow, NodeRunRow, PipelineRunRow
@@ -179,13 +181,15 @@ class RunOrchestrator:
             existing = await _find_by_key(session, pipeline.project_id, idempotency_key)
         if existing is not None:
             return _same_request(existing, request)
+        if pipeline.archived:
+            raise PipelineArchived(str(pipeline.pipeline_id))
         try:
             version = await self._pipelines.get_version(
                 pipeline.pipeline_id, request.pipeline_version
             )
         except PipelineVersionNotFound:
             raise RunRequestInvalid(f"у Pipeline нет версии {request.pipeline_version}") from None
-        await check_bindings(
+        bindings = await resolve_bindings(
             self._datasets,
             principal,
             project_id=pipeline.project_id,
@@ -194,7 +198,7 @@ class RunOrchestrator:
         )
         specs = await self._specs(version.graph)
         return await self._create(
-            pipeline.project_id, version.graph, request, idempotency_key, specs
+            pipeline.project_id, version.graph, request, bindings, idempotency_key, specs
         )
 
     def outbox_relay(self, publisher: Publisher) -> OutboxRelay:
@@ -338,6 +342,7 @@ class RunOrchestrator:
         project_id: UUID,
         graph: PipelineGraph,
         request: RunRequest,
+        bindings: Bindings,
         idempotency_key: str,
         specs: Mapping[BlockRef, BlockSpec],
     ) -> PipelineRun:
@@ -351,8 +356,8 @@ class RunOrchestrator:
                     pipeline_id=request.pipeline_id,
                     pipeline_version=request.pipeline_version,
                     state=RunState.PENDING,
-                    inputs=_dump(request.inputs),
-                    outputs=_dump(request.outputs),
+                    inputs=_dump(bindings.inputs),
+                    outputs=_dump(bindings.outputs),
                     idempotency_key=idempotency_key,
                     request_hash=request.fingerprint(),
                 )
@@ -364,7 +369,7 @@ class RunOrchestrator:
                 if existing is None:
                     raise RuntimeError(f"PipelineRun с ключом {idempotency_key} исчез")
                 return _same_request(existing, request)
-            session.add_all(build_node_runs(run_id, graph, request, specs))
+            session.add_all(build_node_runs(run_id, graph, bindings, specs))
             row = await session.get_one(PipelineRunRow, run_id)
             return _to_run(row)
 

@@ -22,6 +22,7 @@ class PipelineRow(Base):
     name: Mapped[str]
     draft: Mapped[dict[str, Any]]
     last_version_number: Mapped[int] = mapped_column(default=0)
+    archived: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 

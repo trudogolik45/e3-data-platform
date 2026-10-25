@@ -93,6 +93,16 @@ async def list_versions(session: AsyncSession, dataset_id: UUID) -> list[Dataset
     return [_to_version(row) for row in rows]
 
 
+async def latest_version(session: AsyncSession, dataset_id: UUID) -> DatasetVersion | None:
+    row = await session.scalar(
+        select(DatasetVersionRow)
+        .where(DatasetVersionRow.dataset_id == dataset_id)
+        .order_by(DatasetVersionRow.version_number.desc())
+        .limit(1)
+    )
+    return _to_version(row) if row else None
+
+
 def _to_version(row: DatasetVersionRow) -> DatasetVersion:
     return DatasetVersion(
         version_id=row.id,

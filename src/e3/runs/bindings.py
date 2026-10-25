@@ -1,20 +1,23 @@
-"""Запрос на запуск и проверка привязок слотов (PRD §5).
+"""Запрос на запуск и разрешение привязок слотов (PRD §5).
 
-Late Binding: при создании PipelineRun каждый слот получает точное значение.
-Input Slot — существующая DatasetVersion, Output Slot — существующий Dataset
-того же Project. Значения по умолчанию появятся с #7.
+Late Binding: при создании PipelineRun каждый слот получает точное значение —
+из запроса или из значения по умолчанию PipelineVersion. Input Slot —
+существующая DatasetVersion, Output Slot — существующий Dataset того же
+Project. «Последняя версия» превращается в точную здесь же, архивные Dataset
+отклоняются.
 """
 
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from e3 import catalog
 from e3.identity import Principal, authorize_project
-from e3.pipelines import PipelineGraph
+from e3.pipelines import ExactVersion, LatestVersion, PipelineGraph, TargetDataset
 
 
 class InputBinding(BaseModel):
@@ -48,31 +51,63 @@ class RunRequestInvalid(Exception):
     """Запуск нельзя создать: текст исключения — причина для пользователя."""
 
 
-async def check_bindings(
+@dataclass(frozen=True)
+class Bindings:
+    """Точные привязки всех слотов, которые фиксирует PipelineRun."""
+
+    inputs: dict[str, InputBinding]
+    outputs: dict[str, OutputBinding]
+
+
+async def resolve_bindings(
     datasets: catalog.Catalog,
     principal: Principal,
     *,
     project_id: UUID,
     graph: PipelineGraph,
     request: RunRequest,
-) -> None:
-    """Проверяет слоты и права: чтение входов и запись в выходы (`ProjectAccessDenied`)."""
-    _check_slots("Input Slot", (slot.name for slot in graph.input_slots), request.inputs)
-    _check_slots("Output Slot", (slot.name for slot in graph.output_slots), request.outputs)
-    for slot, binding in request.inputs.items():
-        await _check_input(datasets, principal, slot, binding)
-    for slot, binding in request.outputs.items():
-        await _check_output(datasets, principal, slot, binding, project_id)
+) -> Bindings:
+    """Запрос поверх значений по умолчанию; права — чтение входов и запись в выходы."""
+    _check_known("Input Slot", (slot.name for slot in graph.input_slots), request.inputs)
+    _check_known("Output Slot", (slot.name for slot in graph.output_slots), request.outputs)
+    inputs: dict[str, InputBinding] = {}
+    for slot in graph.input_slots:
+        binding = request.inputs.get(slot.name) or await _input_default(
+            datasets, slot.name, slot.default
+        )
+        await _check_input(datasets, principal, slot.name, binding)
+        inputs[slot.name] = binding
+    outputs: dict[str, OutputBinding] = {}
+    for slot in graph.output_slots:
+        output = request.outputs.get(slot.name) or _output_default(slot.name, slot.default)
+        await _check_output(datasets, principal, slot.name, output, project_id)
+        outputs[slot.name] = output
+    return Bindings(inputs, outputs)
 
 
-def _check_slots(kind: str, declared: Iterable[str], bound: Mapping[str, object]) -> None:
-    names = set(declared)
-    missing = sorted(names - bound.keys())
-    if missing:
-        raise RunRequestInvalid(f"не привязан {kind}: {', '.join(missing)}")
-    unknown = sorted(bound.keys() - names)
+def _check_known(kind: str, declared: Iterable[str], bound: Mapping[str, object]) -> None:
+    unknown = sorted(bound.keys() - set(declared))
     if unknown:
         raise RunRequestInvalid(f"у PipelineVersion нет {kind}: {', '.join(unknown)}")
+
+
+async def _input_default(
+    datasets: catalog.Catalog, slot: str, default: ExactVersion | LatestVersion | None
+) -> InputBinding:
+    if default is None:
+        raise RunRequestInvalid(f"не привязан Input Slot: {slot}")
+    if isinstance(default, ExactVersion):
+        return InputBinding(dataset_id=default.dataset_id, version_id=default.version_id)
+    latest = await datasets.latest_version(default.dataset_id)
+    if latest is None:
+        raise RunRequestInvalid(f"Input Slot {slot}: у Dataset нет версий")
+    return InputBinding(dataset_id=default.dataset_id, version_id=latest.version_id)
+
+
+def _output_default(slot: str, default: TargetDataset | None) -> OutputBinding:
+    if default is None:
+        raise RunRequestInvalid(f"не привязан Output Slot: {slot}")
+    return OutputBinding(dataset_id=default.dataset_id)
 
 
 async def _check_input(
@@ -86,6 +121,8 @@ async def _check_input(
         raise RunRequestInvalid(f"Input Slot {slot}: DatasetVersion из другого Dataset")
     dataset = await datasets.get_dataset(binding.dataset_id)
     authorize_project(principal, dataset.project_id)
+    if dataset.archived:
+        raise RunRequestInvalid(f"Input Slot {slot}: Dataset в архиве")
 
 
 async def _check_output(
@@ -102,3 +139,5 @@ async def _check_output(
     authorize_project(principal, dataset.project_id)
     if dataset.project_id != project_id:
         raise RunRequestInvalid(f"Output Slot {slot}: Dataset из другого Project")
+    if dataset.archived:
+        raise RunRequestInvalid(f"Output Slot {slot}: Dataset в архиве")
