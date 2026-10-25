@@ -40,6 +40,9 @@ class WorkloadConfig:
     # Secret с AWS_ACCESS_KEY_ID и AWS_SECRET_ACCESS_KEY для driver и executor.
     s3_secret: str
     memory: str = "512m"
+    # Доля CPU, которую запрашивают driver и executor (`coreRequest`, например "250m").
+    # None — запрос по `cores`, то есть целое ядро.
+    core_request: str | None = None
 
 
 def workload_name(attempt_id: UUID) -> str:
@@ -55,6 +58,8 @@ def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[
         "envFrom": [{"secretRef": {"name": config.s3_secret}}],
         "env": [{"name": "E3_S3_ENDPOINT_URL", "value": config.s3_endpoint_url}],
     }
+    if config.core_request is not None:
+        pod["coreRequest"] = config.core_request
     return {
         "apiVersion": f"{GROUP}/{VERSION}",
         "kind": "SparkApplication",

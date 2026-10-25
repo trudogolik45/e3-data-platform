@@ -71,6 +71,8 @@ teardown() {
     tail -n 50 "$WORK/controller.log" 2>/dev/null
     kubectl get sparkapplications -o wide 2>/dev/null
     kubectl logs -l spark-role=driver --tail=50 2>/dev/null
+    kubectl get pods -A -o wide 2>/dev/null
+    kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -50
     compose logs --tail=50 api 2>/dev/null
   fi
   if [[ "${E3_E2E_KEEP:-}" == 1 ]]; then
@@ -152,6 +154,8 @@ controller_env() {
   export E3_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
   export E3_S3_ENDPOINT_URL=http://localhost:9000
   export E3_SPARK_S3_ENDPOINT_URL="http://$MINIO_IN_KIND:9000"
+  # На 2 vCPU раннера CI целое ядро на driver и executor не помещается рядом с системой kind.
+  export E3_SPARK_CORE_REQUEST=250m
 }
 
 start_controller() {
