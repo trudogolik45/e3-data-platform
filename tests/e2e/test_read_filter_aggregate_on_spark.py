@@ -18,7 +18,7 @@ import httpx
 import pyarrow.parquet as pq
 import pytest
 from kubernetes_asyncio import config as kube_config
-from kubernetes_asyncio.client import ApiClient, CustomObjectsApi
+from kubernetes_asyncio.client import ApiClient, CoreV1Api, CustomObjectsApi
 
 from e3.execution.controller import ExecutionController
 from e3.execution.kubernetes import KubernetesSparkApplications
@@ -233,13 +233,13 @@ async def test_redelivered_submit_execution_leaves_single_spark_application(
         [application] = await _applications(objects, settings.spark_namespace, attempt_id)
         command = parse_command(application["metadata"]["annotations"][COMMAND_ANNOTATION].encode())
         controller = ExecutionController(
-            KubernetesSparkApplications(objects, settings.spark_namespace),
+            KubernetesSparkApplications(objects, CoreV1Api(api), settings.spark_namespace),
             _Unused(),
             _Unused(),
             settings.workload(),
         )
 
-        await controller.submit(command)
+        await controller.handle(command)
 
         [again] = await _applications(objects, settings.spark_namespace, attempt_id)
     finally:

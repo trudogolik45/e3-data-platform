@@ -23,6 +23,9 @@ class IdleOrchestrator:
     async def publish_pending(self) -> int:
         return 0
 
+    async def reconcile_pending(self) -> int:
+        return 0
+
     def outbox_relay(self, publisher: object) -> "IdleOrchestrator":
         return self
 

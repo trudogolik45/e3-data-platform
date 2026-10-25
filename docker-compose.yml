@@ -68,6 +68,8 @@ services:
       E3_S3_ENDPOINT_URL: http://minio:9000
       E3_S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
       E3_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      # E2E укорачивает таймаут reconciliation, чтобы потерянная попытка нашлась за время теста.
+      E3_RECONCILE_AFTER_SECONDS: ${E3_RECONCILE_AFTER_SECONDS:-600}
       # Только для локальной разработки: токен admin API регистрации блоков.
       E3_PLATFORM_TOKEN: dev-platform-token
     ports: ["8000:8000"]

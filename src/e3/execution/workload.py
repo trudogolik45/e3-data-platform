@@ -1,7 +1,9 @@
 """SparkApplication попытки: манифест Kubeflow Spark Operator.
 
 Имя ресурса выводится из `attempt_id`, поэтому повторная `SubmitExecution`
-попадает в уже созданный ресурс и второго workload не будет.
+попадает в уже созданный ресурс и второго workload не будет. Attempt Fence —
+ресурс с тем же именем и `spec.suspend: true`: Spark Operator его не запускает,
+а опоздавшая `SubmitExecution` упирается в занятое имя.
 """
 
 from dataclasses import dataclass
@@ -9,7 +11,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from e3.shared.messages import SubmitExecution
+from e3.shared.messages import ReconcileExecution, SubmitExecution, original_submission
 
 GROUP = "sparkoperator.k8s.io"
 VERSION = "v1beta2"
@@ -18,6 +20,7 @@ PLURAL = "sparkapplications"
 ATTEMPT_LABEL = "e3.io/attempt-id"
 NODE_RUN_LABEL = "e3.io/node-run-id"
 REPORTED_LABEL = "e3.io/reported"
+FENCED_LABEL = "e3.io/fenced"
 COMMAND_ANNOTATION = "e3.io/command"
 
 # Точка входа образа блока: получает ExecutionContext JSON-аргументом.
@@ -29,6 +32,15 @@ class Reported(StrEnum):
 
     STARTED = "started"
     DONE = "done"
+
+
+@dataclass(frozen=True)
+class Pod:
+    """Pod driver или executor попытки глазами Kubernetes."""
+
+    phase: str
+    # Есть `deletionTimestamp`: pod ещё может работать.
+    terminating: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +59,18 @@ class WorkloadConfig:
 
 def workload_name(attempt_id: UUID) -> str:
     return f"e3-{attempt_id}"
+
+
+def is_fence(application: dict[str, Any]) -> bool:
+    return application["metadata"]["labels"].get(FENCED_LABEL) == "true"
+
+
+def attempt_fence(command: ReconcileExecution, config: WorkloadConfig) -> dict[str, Any]:
+    """Занимает имя попытки ресурсом, который Spark Operator не запускает."""
+    fence = spark_application(original_submission(command), config)
+    fence["metadata"]["labels"][FENCED_LABEL] = "true"
+    fence["spec"]["suspend"] = True
+    return fence
 
 
 def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[str, Any]:

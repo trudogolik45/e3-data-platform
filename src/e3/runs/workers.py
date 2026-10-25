@@ -32,6 +32,7 @@ async def background(
         _repeat(orchestrator.dispatch_pending, idle_seconds),
         _repeat(orchestrator.finalize_pending, idle_seconds),
         _repeat(orchestrator.publish_pending, idle_seconds),
+        _repeat(orchestrator.reconcile_pending, idle_seconds),
         _with_kafka(orchestrator, bootstrap_servers, group_id, idle_seconds),
     ]
     tasks = [asyncio.create_task(loop) for loop in loops]

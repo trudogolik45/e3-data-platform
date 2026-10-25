@@ -66,9 +66,7 @@ async def test_uploaded_csv_is_published_as_parquet_version(
         started = await api.start_run(await run_request(api), key=str(uuid4()))
         run_id = started.json()["pipeline_run_id"]
         read = UUID((await api.run_nodes(run_id))["read"]["node_run_id"])
-        command = await fake.next_command()
-        while command.node_run_id != read:
-            command = await fake.next_command()
+        command = await fake.submission(read)
 
         await fake.succeed(command)
 

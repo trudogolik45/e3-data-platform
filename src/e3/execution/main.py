@@ -1,8 +1,9 @@
 """`e3-execution-controller` — процесс Execution Plane.
 
-Читает `SubmitExecution` из `commands.v1`, создаёт SparkApplication и шлёт
-события попыток в `events.v1`. Offset команды коммитится только после создания
-ресурса: падение между ними даёт повтор, а повтор упирается в то же имя ресурса.
+Читает `SubmitExecution` и `ReconcileExecution` из `commands.v1`, создаёт
+SparkApplication или Attempt Fence и шлёт события попыток в `events.v1`. Offset
+команды коммитится только после её обработки: падение посреди даёт повтор, а
+повтор упирается в то же имя ресурса.
 """
 
 import asyncio
@@ -15,7 +16,7 @@ import boto3
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from botocore.config import Config
 from kubernetes_asyncio import config as kube_config
-from kubernetes_asyncio.client import ApiClient, CustomObjectsApi
+from kubernetes_asyncio.client import ApiClient, CoreV1Api, CustomObjectsApi
 from kubernetes_asyncio.config.config_exception import ConfigException
 from pydantic import ValidationError
 
@@ -48,17 +49,17 @@ class CommandConsumer:
 
     async def poll(self, timeout_ms: int) -> int:
         return await consume_batch(
-            self._consumer, self._submit, timeout_ms=timeout_ms, max_records=COMMAND_BATCH
+            self._consumer, self._handle, timeout_ms=timeout_ms, max_records=COMMAND_BATCH
         )
 
-    async def _submit(self, record: Record) -> None:
+    async def _handle(self, record: Record) -> None:
         try:
             command = parse_command(record.value or b"")
         except ValidationError:
             log.error("непонятная команда в %s, offset %s пропущен", record.topic, record.offset)
             return
-        await self._controller.submit(command)
-        log.info("попытка %s отправлена в Spark", command.attempt_id)
+        await self._controller.handle(command)
+        log.info("%s попытки %s обработана", command.type, command.attempt_id)
 
 
 async def serve(settings: ExecutionSettings) -> None:
@@ -93,7 +94,9 @@ async def _commands(
         await producer.start()
         await consumer.start()
         controller = ExecutionController(
-            KubernetesSparkApplications(CustomObjectsApi(api), settings.spark_namespace),
+            KubernetesSparkApplications(
+                CustomObjectsApi(api), CoreV1Api(api), settings.spark_namespace
+            ),
             KafkaEvents(producer),
             StoredResults(_storage(settings)),
             settings.workload(),

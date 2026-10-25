@@ -20,9 +20,19 @@ from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 
 from e3.api.app import create_app, create_storage
-from e3.runs import ensure_topics
+from e3.runs import (
+    EventConsumer,
+    OutboxRelay,
+    Publisher,
+    RunOrchestrator,
+    ensure_topics,
+    event_consumer,
+    kafka_publisher,
+)
 from e3.settings import Settings
+from e3.shared.messages import ExecutionEvent, SubmitExecution
 from e3.shared.storage import ObjectStorage
+from tests.fakes.execution_controller import FakeExecutionController
 from tests.integration.graphs import block_spec, port, read_filter_aggregate_graph, read_graph
 
 pytestmark = pytest.mark.integration
@@ -320,3 +330,117 @@ def storage_like[S: ObjectStorage](cls: type[S], settings: Settings) -> S:
     storage = cls.__new__(cls)
     storage.__dict__.update(real.__dict__)
     return storage
+
+
+class Handler:
+    """Обработчик событий Plant: после рестарта события идут новому Run Orchestrator."""
+
+    def __init__(self, orchestrator: RunOrchestrator) -> None:
+        self.orchestrator = orchestrator
+
+    async def handle_event(self, event: ExecutionEvent) -> None:
+        await self.orchestrator.handle_event(event)
+
+
+@dataclass
+class Plant:
+    """Control Plane стенда, Kafka и Fake Execution Controller; шаги вызывает тест."""
+
+    api: Api
+    orchestrator: RunOrchestrator
+    publisher: Publisher
+    handler: Handler
+    events: EventConsumer
+    fake: FakeExecutionController
+    s3: S3Client
+    settings: Settings
+
+    @property
+    def relay(self) -> OutboxRelay:
+        return self.orchestrator.outbox_relay(self.publisher)
+
+    def restart(self) -> None:
+        """Новый Run Orchestrator на той же БД: в памяти ничего не переживает."""
+        self.orchestrator = create_app(self.settings).state.runs
+        self.handler.orchestrator = self.orchestrator
+
+    async def start(self, pipeline: PipelineMaker = new_read_pipeline) -> str:
+        request = await run_request(self.api, pipeline)
+        response = await self.api.start_run(request, key=str(uuid4()))
+        assert response.status_code == 202, response.text
+        return response.json()["pipeline_run_id"]
+
+    async def node(self, run_id: str, node_id: str) -> dict[str, Any]:
+        return (await self.api.run_nodes(run_id))[node_id]
+
+    async def state(self, run_id: str, node_id: str) -> str:
+        return (await self.node(run_id, node_id))["state"]
+
+    async def attempts(self, run_id: str, node_id: str = "read") -> list[dict[str, Any]]:
+        return (await self.node(run_id, node_id))["attempts"]
+
+    async def submitted(self, run_id: str, node_id: str = "read") -> SubmitExecution:
+        """Запускает узлы, отправляет outbox и ждёт SubmitExecution для `node_id` этого запуска."""
+        await drain(self.orchestrator.dispatch_pending)
+        await drain(self.relay.publish_pending)
+        return await self.fake.submission(UUID((await self.node(run_id, node_id))["node_run_id"]))
+
+    async def execute(self, run_id: str, node_id: str) -> SubmitExecution:
+        """Проводит BLOCK-узел через Execution Plane и принимает его NodeOutput."""
+        command = await self.submitted(run_id, node_id)
+        await self.fake.succeed(command)
+        await self.consume_until(run_id, node_id, "FINALIZING")
+        await self.orchestrator.finalize_pending()
+        assert await self.state(run_id, node_id) == "SUCCEEDED"
+        return command
+
+    async def consume_until(self, run_id: str, node_id: str, state: str) -> None:
+        await self.consume_while(lambda: self._not_in(run_id, node_id, state))
+        assert await self.state(run_id, node_id) == state
+
+    async def consume_attempts(self, run_id: str, count: int, node_id: str = "read") -> None:
+        """Читает события, пока у узла не станет `count` попыток."""
+
+        async def fewer() -> bool:
+            return len(await self.attempts(run_id, node_id)) < count
+
+        await self.consume_while(fewer)
+        assert len(await self.attempts(run_id, node_id)) == count
+
+    async def consume_while(self, waiting: Callable[[], Awaitable[bool]]) -> None:
+        for _ in range(EVENT_POLLS):
+            if not await waiting():
+                return
+            await self.events.poll(timeout_ms=200)
+
+    async def _not_in(self, run_id: str, node_id: str, state: str) -> bool:
+        return await self.state(run_id, node_id) != state
+
+    async def finish(self) -> None:
+        """Доводит запуск после принятого события: FINALIZING и публикация."""
+        await self.orchestrator.finalize_pending()
+        await self.orchestrator.publish_pending()
+
+
+EVENT_POLLS = 50
+
+
+async def drain(step: Callable[[], Awaitable[int]]) -> None:
+    while await step():
+        pass
+
+
+@pytest.fixture
+async def plant(kafka: str, settings: Settings, s3: S3Client) -> AsyncIterator[Plant]:
+    app = create_app(settings)
+    orchestrator: RunOrchestrator = app.state.runs
+    handler = Handler(orchestrator)
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        httpx.AsyncClient(transport=transport, base_url="http://e3") as client,
+        kafka_publisher(kafka) as publisher,
+        event_consumer(kafka, f"test-{uuid4()}", handler) as events,
+        FakeExecutionController(kafka, s3, settings.s3_bucket) as fake,
+    ):
+        api = Api(client, settings.dev_project_id)
+        yield Plant(api, orchestrator, publisher, handler, events, fake, s3, settings)

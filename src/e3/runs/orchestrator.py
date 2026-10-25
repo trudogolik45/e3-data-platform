@@ -5,9 +5,13 @@
 - `start` создаёт PipelineRun и его NodeRun в PENDING;
 - `dispatch_pending` запускает готовые узлы PENDING-запусков: BLOCK — командой
   SubmitExecution через outbox, Publish Dataset — переводом в RUNNING;
-- `handle_event` применяет событие Execution Plane к Current Attempt;
+- `handle_event` применяет событие Execution Plane к Current Attempt; провал
+  с ретраебельной причиной сразу назначает следующую попытку (ADR-0003);
 - `finalize_pending` проверяет manifest NodeRun в FINALIZING и принимает NodeOutput;
-- `publish_pending` выполняет Publish Dataset через Dataset Catalog.
+- `publish_pending` выполняет Publish Dataset через Dataset Catalog;
+- `reconcile_pending` просит Execution Controller проверить попытки, о которых
+  давно нет событий. Молчание — не смерть: `LOST` ставит только доказательство
+  от Controller.
 
 Работа с S3 идёт вне транзакций. Незавершённый шаг виден по состоянию NodeRun,
 поэтому следующий проход его повторит; повтор безопасен.
@@ -16,11 +20,11 @@
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -34,6 +38,7 @@ from e3.pipelines import (
     PipelineService,
     PipelineVersionNotFound,
 )
+from e3.runs.attempts import LIVE, AttemptReason, AttemptState, should_retry
 from e3.runs.bindings import (
     InputBinding,
     OutputBinding,
@@ -42,9 +47,9 @@ from e3.runs.bindings import (
     check_bindings,
 )
 from e3.runs.finalization import OutputRejected, execution_prefix, verify_outputs
-from e3.runs.models import NodeOutputRow, NodeRunRow, PipelineRunRow
+from e3.runs.models import ExecutionAttemptRow, NodeOutputRow, NodeRunRow, PipelineRunRow
 from e3.runs.nodes import NodeKind, build_node_runs, node_inputs, progress
-from e3.runs.outbox import OutboxRelay, Publisher, enqueue, first_delivery
+from e3.runs.outbox import OutboxRelay, Publisher, enqueue, first_delivery, unsent
 from e3.runs.progress import NodeState, RunState, plan
 from e3.shared.contracts import (
     BlockSpec,
@@ -59,16 +64,21 @@ from e3.shared.manifest import DataFormat, DataSchema, Manifest
 from e3.shared.messages import (
     ExecutionEvent,
     ExecutionFailed,
+    ExecutionLost,
     ExecutionStarted,
     ExecutionSucceeded,
     Submission,
     SubmitExecution,
+    reconcile,
+    reconcile_id,
 )
 from e3.shared.storage import ObjectStorage, StorageUnavailable
 
 log = logging.getLogger(__name__)
 
 DISPATCH_BATCH = 10
+# NodeRun, ждущий итога Current Attempt от Execution Plane.
+AWAITING_OUTCOME = frozenset({NodeState.QUEUED, NodeState.RUNNING})
 
 
 class PipelineRunNotFound(Exception):
@@ -100,18 +110,31 @@ class NodeOutput:
 
 
 @dataclass(frozen=True)
+class Attempt:
+    attempt_id: UUID
+    number: int
+    state: AttemptState
+    reason: AttemptReason | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
+@dataclass(frozen=True)
 class NodeRun:
     node_run_id: UUID
     node_id: str
     kind: NodeKind
     state: NodeState
     attempt_id: UUID | None
+    attempts: list[Attempt]
     outputs: list[NodeOutput]
     published_version_id: UUID | None
     error: str | None
 
 
-NodeChange = Callable[[AsyncSession, NodeRunRow], None]
+NodeChange = Callable[[AsyncSession, NodeRunRow], Awaitable[None]]
 
 
 class RunOrchestrator:
@@ -123,12 +146,14 @@ class RunOrchestrator:
         pipelines: PipelineService,
         blocks: BlockRegistry,
         storage: ObjectStorage,
+        reconcile_after: timedelta,
     ) -> None:
         self._sessions = sessions
         self._datasets = datasets
         self._pipelines = pipelines
         self._blocks = blocks
         self._storage = storage
+        self._reconcile_after = reconcile_after
 
     async def start(
         self, principal: Principal, request: RunRequest, *, idempotency_key: str
@@ -177,15 +202,28 @@ class RunOrchestrator:
                     .order_by(NodeRunRow.node_id)
                 )
             ).all()
+            ids = [node.id for node in nodes]
             outputs = (
                 await session.scalars(
                     select(NodeOutputRow)
-                    .where(NodeOutputRow.node_run_id.in_([node.id for node in nodes]))
+                    .where(NodeOutputRow.node_run_id.in_(ids))
                     .order_by(NodeOutputRow.port)
                 )
             ).all()
+            attempts = (
+                await session.scalars(
+                    select(ExecutionAttemptRow)
+                    .where(ExecutionAttemptRow.node_run_id.in_(ids))
+                    .order_by(ExecutionAttemptRow.number)
+                )
+            ).all()
         return [
-            _to_node_run(node, [o for o in outputs if o.node_run_id == node.id]) for node in nodes
+            _to_node_run(
+                node,
+                [a for a in attempts if a.node_run_id == node.id],
+                [o for o in outputs if o.node_run_id == node.id],
+            )
+            for node in nodes
         ]
 
     async def dispatch_pending(self) -> int:
@@ -215,7 +253,10 @@ class RunOrchestrator:
             run, node = locked
             if node.current_attempt_id != event.attempt_id:
                 return
-            await self._apply(session, run, node, event)
+            attempt = await session.get_one(
+                ExecutionAttemptRow, event.attempt_id, with_for_update=True
+            )
+            await self._apply(session, run, node, attempt, event)
 
     async def finalize_pending(self) -> int:
         """Возвращает число NodeRun, по которым проход продвинулся."""
@@ -226,6 +267,43 @@ class RunOrchestrator:
         """Возвращает число NodeRun, по которым проход продвинулся."""
         ids = await self._node_ids(NodeKind.SYSTEM, NodeState.RUNNING)
         return sum([await _isolated(self._publish, node_run_id) for node_run_id in ids])
+
+    async def reconcile_pending(self) -> int:
+        """Ставит в outbox ReconcileExecution молчащим попыткам; возвращает число поставленных.
+
+        Попытка молчит, если с её последней смены состояния или проверки прошло
+        больше `reconcile_after`. Следующая проверка ставится, только когда
+        предыдущая уже ушла в Kafka: неотправленные не копятся. Ответа «жива» нет,
+        поэтому, пока попытка не терминальна, проверки повторяются по таймауту.
+        """
+        async with self._sessions.begin() as session:
+            quiet = await self._quiet_attempts(session)
+            waiting = await unsent(session, [_last_check_id(a) for a in quiet if a.reconcile_count])
+            due = [a for a in quiet if _last_check_id(a) not in waiting]
+            for attempt in due:
+                attempt.reconcile_count += 1
+                attempt.reconcile_requested_at = func.now()
+                command = SubmitExecution.model_validate(attempt.command)
+                enqueue(session, reconcile(command, attempt.reconcile_count))
+            return len(due)
+
+    async def _quiet_attempts(self, session: AsyncSession) -> list[ExecutionAttemptRow]:
+        last_news = func.greatest(
+            ExecutionAttemptRow.created_at,
+            ExecutionAttemptRow.started_at,
+            ExecutionAttemptRow.reconcile_requested_at,
+        )
+        rows = await session.scalars(
+            select(ExecutionAttemptRow)
+            .join(NodeRunRow, NodeRunRow.current_attempt_id == ExecutionAttemptRow.attempt_id)
+            .where(
+                ExecutionAttemptRow.state.in_(LIVE),
+                NodeRunRow.state.in_(AWAITING_OUTCOME),
+                last_news < func.now() - self._reconcile_after,
+            )
+            .with_for_update(of=ExecutionAttemptRow, skip_locked=True)
+        )
+        return list(rows)
 
     async def _create(
         self,
@@ -287,6 +365,12 @@ class RunOrchestrator:
         if node.kind == NodeKind.SYSTEM:
             node.state = NodeState.RUNNING
             return
+        await self._submit_attempt(session, run, node, number=1)
+
+    async def _submit_attempt(
+        self, session: AsyncSession, run: PipelineRunRow, node: NodeRunRow, *, number: int
+    ) -> None:
+        """Попытка, её номер, Current Attempt и SubmitExecution в outbox — одной транзакцией."""
         if node.executable_ref is None:
             raise RuntimeError(f"у BLOCK NodeRun {node.id} нет executable_ref")
         attempt_id = uuid4()
@@ -297,15 +381,22 @@ class RunOrchestrator:
             parameters=node.parameters,
             output_prefix=self._storage.uri(execution_prefix(attempt_id)),
         )
-        enqueue(
-            session,
-            SubmitExecution(
-                node_run_id=node.id,
-                attempt_id=attempt_id,
-                trace_id=str(run.id),
-                payload=Submission(executable_ref=node.executable_ref, context=context),
-            ),
+        command = SubmitExecution(
+            node_run_id=node.id,
+            attempt_id=attempt_id,
+            trace_id=str(run.id),
+            payload=Submission(executable_ref=node.executable_ref, context=context),
         )
+        session.add(
+            ExecutionAttemptRow(
+                attempt_id=attempt_id,
+                node_run_id=node.id,
+                number=number,
+                state=AttemptState.SUBMITTED,
+                command=command.model_dump(mode="json"),
+            )
+        )
+        enqueue(session, command)
         node.current_attempt_id = attempt_id
         node.state = NodeState.QUEUED
 
@@ -333,20 +424,56 @@ class RunOrchestrator:
         )
 
     async def _apply(
-        self, session: AsyncSession, run: PipelineRunRow, node: NodeRunRow, event: ExecutionEvent
+        self,
+        session: AsyncSession,
+        run: PipelineRunRow,
+        node: NodeRunRow,
+        attempt: ExecutionAttemptRow,
+        event: ExecutionEvent,
     ) -> None:
+        """Первый принятый итог попытки от Controller окончателен: следующие не применяются.
+
+        `Succeeded` попытку не завершает: итог ставит проверка manifest в FINALIZING.
+        """
+        if node.state not in AWAITING_OUTCOME or attempt.state not in LIVE:
+            log.info(
+                "событие %s пропущено: NodeRun в %s, попытка в %s",
+                event.type,
+                node.state,
+                attempt.state,
+            )
+            return
         match event:
-            case ExecutionStarted() if node.state == NodeState.QUEUED:
-                node.state = NodeState.RUNNING
-            case ExecutionSucceeded() if node.state == NodeState.RUNNING:
+            case ExecutionStarted():
+                _mark_running(node, attempt)
+            case ExecutionSucceeded():
+                _mark_running(node, attempt)
                 node.state = NodeState.FINALIZING
                 node.result = event.payload.model_dump(mode="json")
-            case ExecutionFailed() if node.state in {NodeState.QUEUED, NodeState.RUNNING}:
-                node.state = NodeState.FAILED
-                node.error = event.payload.error
-                await self._advance(session, run)
-            case _:
-                log.info("событие %s для NodeRun в %s пропущено", event.type, node.state)
+            case ExecutionFailed():
+                reason = AttemptReason(event.payload.reason)
+                await self._end_attempt(session, run, node, attempt, reason, event.payload.error)
+            case ExecutionLost():
+                error = "попытка потеряна: SparkApplication пропал, pod'ов не осталось"
+                await self._end_attempt(session, run, node, attempt, AttemptReason.LOST, error)
+
+    async def _end_attempt(
+        self,
+        session: AsyncSession,
+        run: PipelineRunRow,
+        node: NodeRunRow,
+        attempt: ExecutionAttemptRow,
+        reason: AttemptReason,
+        error: str,
+    ) -> None:
+        """Провал доказуемо мёртвой попытки: следующая попытка или FAILED узла."""
+        _fail(attempt, reason, error)
+        node.error = error
+        if should_retry(attempt.number, reason):
+            await self._submit_attempt(session, run, node, number=attempt.number + 1)
+            return
+        node.state = NodeState.FAILED
+        await self._advance(session, run)
 
     async def _finalize(self, node_run_id: UUID) -> None:
         async with self._sessions() as session:
@@ -355,7 +482,7 @@ class RunOrchestrator:
         try:
             manifests = await verify_outputs(self._storage, result, node.output_ports)
         except OutputRejected as rejection:
-            await self._transition(node_run_id, NodeState.FINALIZING, _failed(str(rejection)))
+            await self._transition(node_run_id, NodeState.FINALIZING, _rejected(str(rejection)))
             return
         await self._transition(node_run_id, NodeState.FINALIZING, _accepted(result, manifests))
 
@@ -400,7 +527,7 @@ class RunOrchestrator:
             run, node = locked
             if node.state != expected:
                 return
-            change(session, node)
+            await change(session, node)
             await self._advance(session, run)
 
     async def _node_ids(self, kind: NodeKind, state: NodeState) -> list[UUID]:
@@ -435,8 +562,46 @@ async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUI
     return True
 
 
+def _last_check_id(attempt: ExecutionAttemptRow) -> UUID:
+    return reconcile_id(attempt.attempt_id, attempt.reconcile_count)
+
+
+def _mark_running(node: NodeRunRow, attempt: ExecutionAttemptRow) -> None:
+    if attempt.state == AttemptState.SUBMITTED:
+        attempt.state = AttemptState.RUNNING
+        attempt.started_at = func.now()
+    node.state = NodeState.RUNNING
+
+
+def _succeed(attempt: ExecutionAttemptRow) -> None:
+    attempt.state = AttemptState.SUCCEEDED
+    attempt.finished_at = func.now()
+
+
+def _fail(attempt: ExecutionAttemptRow, reason: AttemptReason, error: str) -> None:
+    attempt.state = AttemptState.LOST if reason == AttemptReason.LOST else AttemptState.FAILED
+    attempt.reason = reason
+    attempt.error = error
+    attempt.finished_at = func.now()
+
+
+async def _current_attempt(session: AsyncSession, node: NodeRunRow) -> ExecutionAttemptRow:
+    return await session.get_one(ExecutionAttemptRow, node.current_attempt_id, with_for_update=True)
+
+
 def _failed(error: str) -> NodeChange:
-    def change(_session: AsyncSession, node: NodeRunRow) -> None:
+    async def change(_session: AsyncSession, node: NodeRunRow) -> None:
+        node.state = NodeState.FAILED
+        node.error = error
+
+    return change
+
+
+def _rejected(error: str) -> NodeChange:
+    """Manifest отвергнут: попытка провалена без ретрая, причину ставит сам Orchestrator."""
+
+    async def change(session: AsyncSession, node: NodeRunRow) -> None:
+        _fail(await _current_attempt(session, node), AttemptReason.OUTPUT_REJECTED, error)
         node.state = NodeState.FAILED
         node.error = error
 
@@ -444,7 +609,9 @@ def _failed(error: str) -> NodeChange:
 
 
 def _accepted(result: ExecutionResult, manifests: Mapping[str, Manifest]) -> NodeChange:
-    def change(session: AsyncSession, node: NodeRunRow) -> None:
+    async def change(session: AsyncSession, node: NodeRunRow) -> None:
+        _succeed(await _current_attempt(session, node))
+        node.error = None
         for port, manifest in manifests.items():
             session.add(
                 NodeOutputRow(
@@ -461,7 +628,7 @@ def _accepted(result: ExecutionResult, manifests: Mapping[str, Manifest]) -> Nod
 
 
 def _published(version_id: UUID) -> NodeChange:
-    def change(_session: AsyncSession, node: NodeRunRow) -> None:
+    async def change(_session: AsyncSession, node: NodeRunRow) -> None:
         node.state = NodeState.SUCCEEDED
         node.published_version_id = version_id
 
@@ -526,16 +693,32 @@ def _to_run(row: PipelineRunRow) -> PipelineRun:
     )
 
 
-def _to_node_run(row: NodeRunRow, outputs: list[NodeOutputRow]) -> NodeRun:
+def _to_node_run(
+    row: NodeRunRow, attempts: list[ExecutionAttemptRow], outputs: list[NodeOutputRow]
+) -> NodeRun:
     return NodeRun(
         node_run_id=row.id,
         node_id=row.node_id,
         kind=NodeKind(row.kind),
         state=NodeState(row.state),
         attempt_id=row.current_attempt_id,
+        attempts=[_to_attempt(attempt) for attempt in attempts],
         outputs=[_to_node_output(output) for output in outputs],
         published_version_id=row.published_version_id,
         error=row.error,
+    )
+
+
+def _to_attempt(row: ExecutionAttemptRow) -> Attempt:
+    return Attempt(
+        attempt_id=row.attempt_id,
+        number=row.number,
+        state=AttemptState(row.state),
+        reason=AttemptReason(row.reason) if row.reason else None,
+        error=row.error,
+        created_at=row.created_at,
+        started_at=row.started_at,
+        finished_at=row.finished_at,
     )
 
 

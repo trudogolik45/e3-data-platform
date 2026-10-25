@@ -9,9 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from e3.identity import Principal, ProjectAccessDenied, authorize_project, current_principal
 from e3.pipelines import PipelineNotFound
+from e3.runs.attempts import AttemptReason, AttemptState
 from e3.runs.bindings import InputBinding, OutputBinding, RunRequest, RunRequestInvalid
 from e3.runs.nodes import NodeKind
 from e3.runs.orchestrator import (
+    Attempt,
     IdempotencyConflict,
     NodeRun,
     PipelineRun,
@@ -45,12 +47,24 @@ class NodeOutputOut(BaseModel):
     data_schema: DataSchema = Field(serialization_alias="schema")
 
 
+class AttemptOut(BaseModel):
+    number: int
+    attempt_id: UUID
+    state: AttemptState
+    reason: AttemptReason | None
+    error: str | None
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
 class NodeRunOut(BaseModel):
     node_run_id: UUID
     node_id: str
     kind: NodeKind
     state: NodeState
     attempt_id: UUID | None
+    attempts: list[AttemptOut]
     outputs: list[NodeOutputOut]
     published_version_id: UUID | None
     error: str | None
@@ -136,6 +150,7 @@ def _node_out(node: NodeRun) -> NodeRunOut:
         kind=node.kind,
         state=node.state,
         attempt_id=node.attempt_id,
+        attempts=[_attempt_out(attempt) for attempt in node.attempts],
         outputs=[
             NodeOutputOut(
                 port=output.port,
@@ -147,4 +162,17 @@ def _node_out(node: NodeRun) -> NodeRunOut:
         ],
         published_version_id=node.published_version_id,
         error=node.error,
+    )
+
+
+def _attempt_out(attempt: Attempt) -> AttemptOut:
+    return AttemptOut(
+        number=attempt.number,
+        attempt_id=attempt.attempt_id,
+        state=attempt.state,
+        reason=attempt.reason,
+        error=attempt.error,
+        created_at=attempt.created_at,
+        started_at=attempt.started_at,
+        finished_at=attempt.finished_at,
     )

@@ -58,6 +58,25 @@ class NodeRunRow(Base):
     error: Mapped[str | None]
 
 
+class ExecutionAttemptRow(Base):
+    __tablename__ = "execution_attempts"
+    __table_args__ = (UniqueConstraint("node_run_id", "number"),)
+
+    attempt_id: Mapped[UUID] = mapped_column(primary_key=True)
+    node_run_id: Mapped[UUID] = mapped_column(ForeignKey("node_runs.id"))
+    number: Mapped[int]
+    state: Mapped[str] = mapped_column(String(16))
+    reason: Mapped[str | None] = mapped_column(String(32))
+    error: Mapped[str | None]
+    # SubmitExecution попытки: из неё же собирается ReconcileExecution.
+    command: Mapped[dict[str, Any]]
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
+    reconcile_requested_at: Mapped[datetime | None]
+    reconcile_count: Mapped[int] = mapped_column(default=0)
+
+
 class NodeOutputRow(Base):
     __tablename__ = "node_outputs"
 

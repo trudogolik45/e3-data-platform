@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# E2E `Read → Filter → Aggregate → Publish Dataset` на настоящем Spark
-# (kind + Kubeflow Spark Operator).
+# E2E на настоящем Spark (kind + Kubeflow Spark Operator): `Read → Filter →
+# Aggregate → Publish Dataset`, Attempt Fence и ретрай пропавшей попытки.
 #
 # Поднимает kind с локальным OCI registry и Spark Operator, Control Plane через
 # docker compose, собирает и пушит образы блоков, регистрирует их digest через
@@ -25,6 +25,8 @@ PLATFORM_TOKEN=dev-platform-token # E3_PLATFORM_TOKEN сервиса api в dock
 
 export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
 export COMPOSE_PROJECT_NAME=e3-e2e
+# Удалённую посреди запуска попытку reconciliation должна найти за секунды, а не минуты.
+export E3_RECONCILE_AFTER_SECONDS=15
 export PATH="$CACHE/bin:$PATH"
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -175,7 +177,7 @@ main() {
   for block in "${BLOCKS[@]}"; do register_block "$block"; done
   controller_env
   start_controller
-  log "E2E: Read → Filter → Aggregate → Publish Dataset"
+  log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence"
   E3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
 }
 

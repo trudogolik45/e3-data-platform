@@ -16,7 +16,12 @@ from e3.shared.contracts import (
     ResolvedInput,
 )
 from e3.shared.manifest import Manifest
-from e3.shared.messages import ExecutionEvent, SubmitExecution
+from e3.shared.messages import (
+    ExecutionCommand,
+    ExecutionEvent,
+    ReconcileExecution,
+    SubmitExecution,
+)
 
 CONTRACTS: dict[str, Any] = {
     "DatasetVersionRef": DatasetVersionRef,
@@ -29,6 +34,8 @@ CONTRACTS: dict[str, Any] = {
     "ExecutionResult": ExecutionResult,
     "Manifest": Manifest,
     "SubmitExecution": SubmitExecution,
+    "ReconcileExecution": ReconcileExecution,
+    "ExecutionCommand": ExecutionCommand,
     "ExecutionEvent": ExecutionEvent,
 }
 

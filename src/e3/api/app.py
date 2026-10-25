@@ -42,6 +42,7 @@ def create_app(settings: Settings, *, storage: ObjectStorage | None = None) -> F
         pipelines=app.state.pipelines,
         blocks=app.state.blocks,
         storage=storage,
+        reconcile_after=timedelta(seconds=settings.reconcile_after_seconds),
     )
     app.state.platform_token = settings.platform_token
     app.include_router(catalog.router)

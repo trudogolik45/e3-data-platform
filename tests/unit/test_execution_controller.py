@@ -4,7 +4,7 @@ import pytest
 
 from e3.execution.controller import ExecutionController
 from e3.execution.settings import ExecutionSettings
-from e3.execution.workload import WorkloadConfig
+from e3.execution.workload import COMMAND_ANNOTATION, FENCED_LABEL, Pod, WorkloadConfig
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.messages import (
     ExecutionEvent,
@@ -12,6 +12,8 @@ from e3.shared.messages import (
     ExecutionSucceeded,
     Submission,
     SubmitExecution,
+    parse_command,
+    reconcile,
 )
 from tests.fakes.spark_applications import InMemorySparkApplications
 
@@ -133,6 +135,7 @@ async def test_failed_application_is_reported_failed_with_operator_error() -> No
     assert len(events.sent) == 1
     assert isinstance(events.sent[0], ExecutionFailed)
     assert "driver exited with 1" in events.sent[0].payload.error
+    assert events.sent[0].payload.reason == "SPARK_FAILED"
 
 
 async def test_completed_application_without_block_result_is_reported_failed() -> None:
@@ -144,6 +147,8 @@ async def test_completed_application_without_block_result_is_reported_failed() -
     await execution.report()
 
     assert [event.type for event in events.sent] == ["ExecutionStarted", "ExecutionFailed"]
+    assert isinstance(events.sent[1], ExecutionFailed)
+    assert events.sent[1].payload.reason == "NO_RESULT"
 
 
 async def test_application_not_yet_running_is_not_reported() -> None:
@@ -181,3 +186,143 @@ async def test_spark_pods_request_whole_core_by_default() -> None:
     for pod in (spec["driver"], spec["executor"]):
         assert pod["cores"] == 1
         assert "coreRequest" not in pod
+
+
+def name(submit: SubmitExecution) -> str:
+    return f"e3-{submit.attempt_id}"
+
+
+async def test_failed_submission_is_reported_with_its_own_reason() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "SUBMISSION_FAILED", error="no such image")
+
+    await execution.report()
+
+    [event] = events.sent
+    assert isinstance(event, ExecutionFailed)
+    assert event.payload.reason == "SUBMISSION_FAILED"
+
+
+@pytest.mark.parametrize(
+    "pod", [Pod(phase="Running"), Pod(phase="Unknown"), Pod(phase="Failed", terminating=True)]
+)
+async def test_failed_application_is_not_reported_while_its_pod_may_live(pod: Pod) -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="executor lost")
+    applications.set_pods(submit.attempt_id, Pod(phase="Failed"), pod)
+
+    pending = await execution.report()
+
+    assert (pending, events.sent) == (1, [])
+
+
+async def test_failed_application_is_reported_once_its_pods_are_gone_or_finished() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="executor lost")
+    applications.set_pods(submit.attempt_id, Pod(phase="Running"))
+    await execution.report()
+
+    applications.set_pods(submit.attempt_id, Pod(phase="Failed"), Pod(phase="Succeeded"))
+    await execution.report()
+
+    assert [event.type for event in events.sent] == ["ExecutionFailed"]
+
+
+async def test_operator_rerun_is_not_an_outcome() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "PENDING_RERUN")
+
+    await execution.report()
+
+    assert events.sent == []
+
+
+async def test_reconcile_of_finished_attempt_resends_same_outcome() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+    await execution.report()
+
+    await execution.handle(reconcile(submit, 1))
+
+    first, again = events.sent
+    assert again == first.model_copy(update={"occurred_at": again.occurred_at})
+
+
+async def test_reconcile_of_live_attempt_sends_nothing() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "RUNNING")
+    applications.set_pods(submit.attempt_id, Pod(phase="Running"))
+    await execution.report()
+
+    await execution.handle(reconcile(submit, 1))
+
+    assert [event.type for event in events.sent] == ["ExecutionStarted"]
+    assert FENCED_LABEL not in applications.items[name(submit)]["metadata"]["labels"]
+
+
+async def test_reconcile_of_vanished_attempt_fences_it_then_reports_lost() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+
+    await execution.handle(reconcile(submit, 1))
+
+    fence = applications.items[name(submit)]
+    assert fence["spec"]["suspend"] is True
+    original = parse_command(fence["metadata"]["annotations"][COMMAND_ANNOTATION].encode())
+    assert isinstance(original, SubmitExecution)
+    assert (original.attempt_id, original.payload) == (submit.attempt_id, submit.payload)
+    assert fence["metadata"]["labels"][FENCED_LABEL] == "true"
+    assert [event.type for event in events.sent] == ["ExecutionLost"]
+
+
+async def test_fenced_attempt_is_reported_lost_only_after_its_pods_are_gone() -> None:
+    execution, applications, events, results = controller()
+    submit = command()
+    applications.set_pods(submit.attempt_id, Pod(phase="Running", terminating=True))
+    await execution.handle(reconcile(submit, 1))
+    assert events.sent == []
+
+    applications.set_pods(submit.attempt_id)
+    restarted = ExecutionController(applications, events, results, CONFIG)
+    await restarted.report()
+    await restarted.report()
+
+    assert [event.type for event in events.sent] == ["ExecutionLost"]
+
+
+async def test_late_submit_after_fence_starts_no_spark() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    applications.set_pods(submit.attempt_id, Pod(phase="Running"))
+    await execution.handle(reconcile(submit, 1))
+
+    await execution.handle(submit)
+    applications.set_state(name(submit), "RUNNING")
+    await execution.report()
+
+    assert applications.items[name(submit)]["spec"]["suspend"] is True
+    assert events.sent == []
+
+
+async def test_existing_real_application_is_never_fenced() -> None:
+    execution, applications, events, _ = controller()
+    submit = command()
+    applications.vanish_once(name(submit))
+    await execution.submit(submit)
+
+    await execution.handle(reconcile(submit, 1))
+
+    assert "suspend" not in applications.items[name(submit)]["spec"]
+    assert events.sent == []
