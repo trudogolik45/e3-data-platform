@@ -9,10 +9,10 @@ from uuid import uuid4
 
 import pytest
 
-from e3.api.app import create_app
-from e3.runs.orchestrator import ACTIVE_RUNS_LIMIT as LIMIT
-from e3.runs.orchestrator import DISPATCH_BATCH
-from e3.shared.messages import CancelExecution, SubmitExecution
+from n3.api.app import create_app
+from n3.runs.orchestrator import ACTIVE_RUNS_LIMIT as LIMIT
+from n3.runs.orchestrator import DISPATCH_BATCH
+from n3.shared.messages import CancelExecution, SubmitExecution
 from tests.integration.conftest import (
     Api,
     Plant,
