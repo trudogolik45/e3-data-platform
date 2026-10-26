@@ -63,7 +63,7 @@ class _Unused:
 
 @pytest.fixture
 async def cluster() -> AsyncIterator[tuple[KubernetesSparkApplications, ExecutionController]]:
-    settings = ExecutionSettings()
+    settings = ExecutionSettings()  # pyright: ignore[reportCallIssue]
     await kube_config.load_kube_config()
     api = ApiClient()
     try:
@@ -109,7 +109,7 @@ async def test_suspended_attempt_fence_starts_no_pods(
 ) -> None:
     applications, _ = cluster
     command = submission()
-    settings = ExecutionSettings()
+    settings = ExecutionSettings()  # pyright: ignore[reportCallIssue]
 
     assert await applications.create(attempt_fence(reconcile(command, 1), settings.workload()))
     await asyncio.sleep(SUSPEND_WATCH_SECONDS)
@@ -208,7 +208,7 @@ async def _read(api: Api, run_id: str) -> dict[str, Any]:
 
 async def _delete(name: str) -> None:
     """Удаляет SparkApplication мимо Controller, как `kubectl delete`."""
-    settings = ExecutionSettings()
+    settings = ExecutionSettings()  # pyright: ignore[reportCallIssue]
     api = ApiClient()
     try:
         await CustomObjectsApi(api).delete_namespaced_custom_object(

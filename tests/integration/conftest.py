@@ -129,8 +129,8 @@ def base_settings(postgres: PostgresContainer, minio: MinioContainer) -> Setting
         environment="dev",
         database_url=postgres.get_connection_url(),
         s3_endpoint_url=f"http://{endpoint}",
-        s3_access_key=minio.access_key,
-        s3_secret_key=minio.secret_key,
+        s3_access_key=SecretStr(minio.access_key),
+        s3_secret_key=SecretStr(minio.secret_key),
         s3_bucket=BUCKET,
         platform_token=SecretStr(PLATFORM_TOKEN),
     )
@@ -153,8 +153,8 @@ def s3_admin(settings: Settings) -> S3Client:
     return boto3.client(
         "s3",
         endpoint_url=settings.s3_endpoint_url,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
+        aws_access_key_id=settings.s3_access_key.get_secret_value(),
+        aws_secret_access_key=settings.s3_secret_key.get_secret_value(),
         region_name=settings.s3_region,
     )
 

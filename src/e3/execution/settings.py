@@ -1,4 +1,4 @@
-from pydantic import Field
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from e3.execution.workload import WorkloadConfig
@@ -24,8 +24,9 @@ class ExecutionSettings(BaseSettings):
 
     # S3 глазами самого контроллера: читает ExecutionResult блока.
     s3_endpoint_url: str = "http://localhost:9000"
-    s3_access_key: str = "minioadmin"
-    s3_secret_key: str = "minioadmin"
+    # Без значений по умолчанию: забытые ключи не должны подменяться общеизвестными.
+    s3_access_key: SecretStr
+    s3_secret_key: SecretStr
     s3_region: str = "us-east-1"
     s3_bucket: str = "e3-lake"
 

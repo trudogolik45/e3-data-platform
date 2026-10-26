@@ -1,8 +1,10 @@
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from e3.execution.controller import ExecutionController
+from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import (
     CANCELLED_LABEL,
     COMMAND_ANNOTATION,
@@ -24,6 +26,7 @@ from e3.shared.messages import (
     reconcile,
 )
 from tests.fakes.spark_applications import InMemorySparkApplications
+from tests.unit.conftest import UNIT_S3_SECRET
 
 IMAGE = "localhost:5001/e3-read@sha256:" + "a" * 64
 CONFIG = WorkloadConfig(
@@ -394,3 +397,19 @@ async def test_name_reoccupied_by_late_submit_is_freed_and_fenced_by_next_cancel
 
     assert applications.items[name(submit)]["metadata"]["labels"][CANCELLED_LABEL] == "true"
     assert [event.type for event in events.sent] == ["ExecutionCancelled"]
+
+
+@pytest.mark.parametrize("missing", ["E3_S3_ACCESS_KEY", "E3_S3_SECRET_KEY"])
+def test_controller_settings_require_explicit_s3_keys(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    monkeypatch.delenv(missing)
+
+    with pytest.raises(ValidationError, match=missing.removeprefix("E3_").lower()):
+        ExecutionSettings(_env_file=None)  # pyright: ignore[reportCallIssue]
+
+
+def test_controller_settings_hide_s3_keys_from_repr() -> None:
+    settings = ExecutionSettings(_env_file=None)  # pyright: ignore[reportCallIssue]
+
+    assert UNIT_S3_SECRET not in repr(settings)
