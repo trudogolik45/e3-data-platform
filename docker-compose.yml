@@ -43,18 +43,22 @@ services:
     ports: ["9000:9000", "9001:9001"]
 
   minio-init:
-    image: amazon/aws-cli:latest
+    # Bucket и пользователь Execution Controller: его ключами он читает результаты
+    # и выдаёт Attempt Credentials через STS (ADR-0006), root ему не нужен.
+    image: cgr.dev/chainguard/minio-client:latest
     depends_on: [minio]
     environment:
-      AWS_ACCESS_KEY_ID: minioadmin
-      AWS_SECRET_ACCESS_KEY: minioadmin
-      AWS_DEFAULT_REGION: us-east-1
-    entrypoint: ["sh", "-c"]
+      MC_HOST_e3: http://minioadmin:minioadmin@minio:9000
+    volumes:
+      - ./scripts/minio/execution-controller-policy.json:/policy.json:ro
+    entrypoint: ["bash", "-ec"]
     command:
       - >
-        until aws --endpoint-url http://minio:9000 s3api list-buckets >/dev/null 2>&1; do sleep 1; done;
-        aws --endpoint-url http://minio:9000 s3api head-bucket --bucket e3-lake 2>/dev/null
-        || aws --endpoint-url http://minio:9000 s3api create-bucket --bucket e3-lake
+        until mc ready e3 >/dev/null 2>&1; do sleep 1; done;
+        mc mb --ignore-existing e3/e3-lake;
+        mc admin user add e3 e3-execution-controller e3-execution-controller-secret;
+        mc admin policy create e3 e3-execution-controller /policy.json;
+        mc admin policy attach e3 e3-execution-controller --user e3-execution-controller
 
   oidc:
     # Только для локальной разработки и e2e: выдаёт JWT любому client_id без пароля.

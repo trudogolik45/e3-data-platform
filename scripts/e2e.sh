@@ -140,9 +140,6 @@ start_control_plane() {
   minio=$(compose ps -q minio)
   connect_to_kind "$minio"
   MINIO_IN_KIND=$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$minio")
-  kubectl create secret generic e3-s3 \
-    --from-literal=AWS_ACCESS_KEY_ID=minioadmin --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin \
-    --dry-run=client -o yaml | kubectl apply -f -
 }
 
 register_block() {
@@ -159,7 +156,8 @@ register_block() {
 controller_env() {
   export E3_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
   export E3_S3_ENDPOINT_URL=http://localhost:9000
-  export E3_S3_ACCESS_KEY=minioadmin E3_S3_SECRET_KEY=minioadmin
+  # Пользователь контроллера из minio-init в docker-compose.yml, не root MinIO.
+  export E3_S3_ACCESS_KEY=e3-execution-controller E3_S3_SECRET_KEY=e3-execution-controller-secret
   export E3_SPARK_S3_ENDPOINT_URL="http://$MINIO_IN_KIND:9000"
 }
 

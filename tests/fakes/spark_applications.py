@@ -1,11 +1,12 @@
 """In-memory SparkApplications и pod'ы: как Kubernetes API, но без кластера.
 
 Ресурс идентифицируется именем: повторное создание с тем же именем — no-op,
-как ответ 409 AlreadyExists у настоящего API.
+как ответ 409 AlreadyExists у настоящего API. Secret уходит вместе со своей
+`SparkApplication`, как при сборке мусора по ownerReference.
 """
 
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from e3.execution.workload import REPORTED_LABEL, Pod, Reported
 
@@ -13,6 +14,7 @@ from e3.execution.workload import REPORTED_LABEL, Pod, Reported
 class InMemorySparkApplications:
     def __init__(self) -> None:
         self.items: dict[str, dict[str, Any]] = {}
+        self.secrets: dict[str, dict[str, Any]] = {}
         self._pods: dict[UUID, list[Pod]] = {}
         self._hidden: set[str] = set()
         self._reoccupy: dict[str, dict[str, Any]] = {}
@@ -21,8 +23,19 @@ class InMemorySparkApplications:
         name = manifest["metadata"]["name"]
         if name in self.items:
             return False
-        self.items[name] = manifest
+        self._store(manifest)
         return True
+
+    def _store(self, manifest: dict[str, Any]) -> None:
+        """Как API server: у каждого созданного ресурса свой `metadata.uid`."""
+        manifest["metadata"]["uid"] = str(uuid4())
+        self.items[manifest["metadata"]["name"]] = manifest
+
+    async def has_secret(self, name: str) -> bool:
+        return name in self.secrets
+
+    async def create_secret(self, manifest: dict[str, Any]) -> None:
+        self.secrets.setdefault(manifest["metadata"]["name"], manifest)
 
     async def get(self, name: str) -> dict[str, Any] | None:
         if name in self._hidden:
@@ -52,9 +65,18 @@ class InMemorySparkApplications:
         self._pods[attempt_id] = list(pods)
 
     async def delete(self, name: str) -> None:
-        self.items.pop(name, None)
+        deleted = self.items.pop(name, None)
+        if deleted is not None:
+            self._collect_secrets(deleted["metadata"]["uid"])
         if name in self._reoccupy:
-            self.items[name] = self._reoccupy.pop(name)
+            self._store(self._reoccupy.pop(name))
+
+    def _collect_secrets(self, owner_uid: str) -> None:
+        self.secrets = {
+            name: secret
+            for name, secret in self.secrets.items()
+            if all(o["uid"] != owner_uid for o in secret["metadata"]["ownerReferences"])
+        }
 
     def reoccupy_after_delete(self, manifest: dict[str, Any]) -> None:
         """Сразу после следующего удаления имя снова занимает `manifest`.

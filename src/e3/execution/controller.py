@@ -4,12 +4,17 @@
 мертва (ADR-0003): `SparkApplication` терминален или заменён Attempt Fence, и у
 попытки не осталось pod'ов, которые ещё работают или могут заработать. Сам
 Controller ничего не перезапускает: ретраи решает Run Orchestrator.
+
+Каждая запущенная попытка получает свои Attempt Credentials (ADR-0006) в Secret,
+которым владеет её `SparkApplication`. Secret создаётся после ресурса: без
+владельца он не останется. До его появления pod ждёт в `CreateContainerConfigError`.
 """
 
 import logging
 from typing import Any, Protocol
 from uuid import UUID
 
+from e3.execution.credentials import S3Keys
 from e3.execution.workload import (
     COMMAND_ANNOTATION,
     REPORTED_LABEL,
@@ -17,6 +22,8 @@ from e3.execution.workload import (
     Reported,
     WorkloadConfig,
     attempt_fence,
+    credentials_secret,
+    credentials_secret_name,
     is_cancelled,
     is_fence,
     spark_application,
@@ -74,6 +81,12 @@ class SparkApplications(Protocol):
         """Pod'ы driver и executor с меткой попытки."""
         ...
 
+    async def has_secret(self, name: str) -> bool: ...
+
+    async def create_secret(self, manifest: dict[str, Any]) -> None:
+        """Создаёт Secret; с таким именем уже есть — no-op."""
+        ...
+
 
 class Events(Protocol):
     async def send(self, event: ExecutionEvent) -> None: ...
@@ -85,17 +98,25 @@ class Results(Protocol):
         ...
 
 
+class AttemptCredentials(Protocol):
+    async def issue(self, context: ExecutionContext) -> S3Keys:
+        """Ключи только на входы из `context` и его `output_prefix`."""
+        ...
+
+
 class ExecutionController:
     def __init__(
         self,
         applications: SparkApplications,
         events: Events,
         results: Results,
+        credentials: AttemptCredentials,
         config: WorkloadConfig,
     ) -> None:
         self._applications = applications
         self._events = events
         self._results = results
+        self._credentials = credentials
         self._config = config
 
     async def handle(self, command: Command) -> None:
@@ -108,11 +129,21 @@ class ExecutionController:
                 await self.cancel(command)
 
     async def submit(self, command: SubmitExecution) -> None:
-        if await self._applications.create(spark_application(command, self._config)):
+        """Повтор команды дозаводит Secret, если прошлая обработка упала до него.
+
+        Есть Secret — новых ключей не выдаём: лишнюю STS-сессию не отозвать.
+        """
+        await self._applications.create(spark_application(command, self._config))
+        application = await self._applications.get(workload_name(command.attempt_id))
+        if application is None:
             return
-        existing = await self._applications.get(workload_name(command.attempt_id))
-        if existing is not None and is_fence(existing):
+        if is_fence(application):
             log.warning("попытка %s огорожена Attempt Fence, Spark не запущен", command.attempt_id)
+            return
+        if await self._applications.has_secret(credentials_secret_name(command.attempt_id)):
+            return
+        keys = await self._credentials.issue(command.payload.context)
+        await self._applications.create_secret(credentials_secret(application, keys))
 
     async def reconcile(self, command: ReconcileExecution) -> None:
         """Заново шлёт доказанный итог; пропавший ресурс сначала заменяет Attempt Fence.

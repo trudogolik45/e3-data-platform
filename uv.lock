@@ -377,6 +377,9 @@ wheels = [
 s3 = [
     { name = "mypy-boto3-s3" },
 ]
+sts = [
+    { name = "mypy-boto3-sts" },
+]
 
 [[package]]
 name = "botocore"
@@ -715,8 +718,9 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "boto3-stubs", extra = ["s3"] },
+    { name = "boto3-stubs", extra = ["s3", "sts"] },
     { name = "import-linter" },
+    { name = "minio" },
     { name = "pyarrow" },
     { name = "pyright" },
     { name = "pytest" },
@@ -746,8 +750,9 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.43.118" },
+    { name = "boto3-stubs", extras = ["s3", "sts"], specifier = ">=1.43.118" },
     { name = "import-linter", specifier = ">=2.15" },
+    { name = "minio", specifier = ">=7.2.20" },
     { name = "pyarrow", specifier = ">=26.0.0" },
     { name = "pyright", specifier = ">=1.1.414" },
     { name = "pytest", specifier = ">=9.1.1" },
@@ -1365,6 +1370,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/46/db/e3922d6c62365c1098da97d9a775e78c66827df5cba11619a7d2a11cdae4/mypy_boto3_s3-1.43.106.tar.gz", hash = "sha256:731195f15830699a36e29d3c8abb2918bccd3587eb2edcb233f8046967893279", size = 79447, upload-time = "2026-09-30T22:44:48.472Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b8/4a/52419b5496215ab52c6c257134c1ac0da25c1ca5d802f133424d02a43686/mypy_boto3_s3-1.43.106-py3-none-any.whl", hash = "sha256:e233d04dbcf3925522dff4346e75c37344ec3d1cbb82337e5eed2af263847668", size = 86791, upload-time = "2026-09-30T22:44:46.139Z" },
+]
+
+[[package]]
+name = "mypy-boto3-sts"
+version = "1.43.94"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/63/2f/f4b904067f66ca7e754172947da7a4f3e6b1e690825d8beb00bf14018279/mypy_boto3_sts-1.43.94.tar.gz", hash = "sha256:d169e309deecf99cb8a897e34733571fcaa605447e29b9f6a8c32202c82690ce", size = 16946, upload-time = "2026-09-14T22:12:39.635Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/67/55eb07da986be10be03a06181848daafede88b354c7b96f703b0e88c43c2/mypy_boto3_sts-1.43.94-py3-none-any.whl", hash = "sha256:4a740ed21a689fc980fe804a4886fbe4ef84281878cf4a87934e38f27386f2cb", size = 21020, upload-time = "2026-09-14T22:12:36.843Z" },
 ]
 
 [[package]]

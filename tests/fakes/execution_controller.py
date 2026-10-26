@@ -50,6 +50,7 @@ from e3.shared.messages import (
     succeeded,
 )
 from e3.shared.storage import ObjectStorage
+from tests.fakes.attempt_credentials import FixedCredentials
 from tests.fakes.spark_applications import InMemorySparkApplications
 
 DATA_FILE = "data/part-00000.parquet"
@@ -60,7 +61,6 @@ WORKLOAD = WorkloadConfig(
     service_account="spark-operator-spark",
     spark_version="3.5.9",
     s3_endpoint_url="http://minio:9000",
-    s3_secret="e3-s3",
 )
 
 
@@ -142,7 +142,9 @@ class FakeExecutionController:
     def controller(self) -> ExecutionController:
         """Настоящий Execution Controller над `cluster`; новый вызов — рестарт Controller."""
         results = StoredResults(ObjectStorage(self._s3, self._s3, self._bucket))
-        return ExecutionController(self.cluster, _Events(self), results, WORKLOAD)
+        return ExecutionController(
+            self.cluster, _Events(self), results, FixedCredentials(), WORKLOAD
+        )
 
     def run_spark(self, command: SubmitExecution) -> None:
         """Spark Operator запустил попытку: driver работает."""

@@ -1,9 +1,10 @@
 """`e3-execution-controller` — процесс Execution Plane.
 
 Читает `SubmitExecution`, `ReconcileExecution` и `CancelExecution` из `commands.v1`,
-создаёт или удаляет SparkApplication, ставит Attempt Fence и шлёт события попыток
-в `events.v1`. Offset команды коммитится только после её обработки: падение
-посреди даёт повтор, а повтор упирается в то же имя ресурса.
+создаёт или удаляет SparkApplication, выдаёт попыткам Attempt Credentials, ставит
+Attempt Fence и шлёт события попыток в `events.v1`. Offset команды коммитится
+только после её обработки: падение посреди даёт повтор, а повтор упирается в то
+же имя ресурса.
 """
 
 import asyncio
@@ -11,6 +12,7 @@ import contextlib
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 import boto3
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
@@ -21,12 +23,17 @@ from kubernetes_asyncio.config.config_exception import ConfigException
 from pydantic import ValidationError
 
 from e3.execution.controller import ExecutionController
+from e3.execution.credentials import StsCredentials
 from e3.execution.kubernetes import KubernetesSparkApplications
 from e3.execution.results import StoredResults
 from e3.execution.settings import ExecutionSettings
 from e3.shared.kafka import Record, consume_batch, manual_commit_consumer, reliable_producer
 from e3.shared.messages import COMMANDS_TOPIC, EVENTS_TOPIC, ExecutionEvent, parse_command
 from e3.shared.storage import ObjectStorage
+
+if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
+    from mypy_boto3_sts import STSClient
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +106,7 @@ async def _commands(
             ),
             KafkaEvents(producer),
             StoredResults(_storage(settings)),
+            attempt_credentials(settings),
             settings.workload(),
         )
         yield CommandConsumer(consumer, controller), controller
@@ -116,7 +124,7 @@ async def _load_kube_config() -> None:
 
 
 def _storage(settings: ExecutionSettings) -> ObjectStorage:
-    client = boto3.client(
+    client: S3Client = boto3.client(
         "s3",
         endpoint_url=settings.s3_endpoint_url,
         aws_access_key_id=settings.s3_access_key.get_secret_value(),
@@ -125,6 +133,18 @@ def _storage(settings: ExecutionSettings) -> ObjectStorage:
         config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
     return ObjectStorage(client, client, settings.s3_bucket)
+
+
+def attempt_credentials(settings: ExecutionSettings) -> StsCredentials:
+    """MinIO STS отвечает на том же адресе, что и S3, и тем же ключам контроллера."""
+    sts: STSClient = boto3.client(
+        "sts",
+        endpoint_url=settings.s3_endpoint_url,
+        aws_access_key_id=settings.s3_access_key.get_secret_value(),
+        aws_secret_access_key=settings.s3_secret_key.get_secret_value(),
+        region_name=settings.s3_region,
+    )
+    return StsCredentials(sts, settings.attempt_credentials_seconds)
 
 
 def main() -> None:

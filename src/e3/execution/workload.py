@@ -5,6 +5,10 @@
 ресурс с тем же именем и `spec.suspend: true`: Spark Operator его не запускает,
 а опоздавшая `SubmitExecution` упирается в занятое имя. Метка отмены на заборе
 значит, что попытку остановили по `CancelExecution`, а не потеряли.
+
+Attempt Credentials лежат в Secret попытки (ADR-0006): его владелец —
+`SparkApplication`, и Kubernetes удаляет Secret вместе с ней. Забор ключей
+не получает.
 """
 
 import math
@@ -13,6 +17,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from e3.execution.credentials import S3Keys
 from e3.shared.messages import (
     CancelExecution,
     PodSize,
@@ -58,12 +63,41 @@ class WorkloadConfig:
     service_account: str
     spark_version: str
     s3_endpoint_url: str
-    # Secret с AWS_ACCESS_KEY_ID и AWS_SECRET_ACCESS_KEY для driver и executor.
-    s3_secret: str
 
 
 def workload_name(attempt_id: UUID) -> str:
     return f"e3-{attempt_id}"
+
+
+def credentials_secret_name(attempt_id: UUID) -> str:
+    return f"{workload_name(attempt_id)}-s3"
+
+
+def credentials_secret(application: dict[str, Any], keys: S3Keys) -> dict[str, Any]:
+    """Secret с Attempt Credentials; уходит вместе с `application` (ownerReference)."""
+    metadata = application["metadata"]
+    attempt_id = UUID(metadata["labels"][ATTEMPT_LABEL])
+    return {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": credentials_secret_name(attempt_id),
+            "namespace": metadata["namespace"],
+            "labels": {ATTEMPT_LABEL: str(attempt_id)},
+            "ownerReferences": [
+                {
+                    "apiVersion": application["apiVersion"],
+                    "kind": application["kind"],
+                    "name": metadata["name"],
+                    "uid": metadata["uid"],
+                    "controller": True,
+                    "blockOwnerDeletion": True,
+                }
+            ],
+        },
+        "type": "Opaque",
+        "stringData": keys.env(),
+    }
 
 
 def is_fence(application: dict[str, Any]) -> bool:
@@ -90,7 +124,7 @@ def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[
     labels = {ATTEMPT_LABEL: str(command.attempt_id), NODE_RUN_LABEL: str(command.node_run_id)}
     pod = _pod_size(command.payload.pod) | {
         "labels": labels,
-        "envFrom": [{"secretRef": {"name": config.s3_secret}}],
+        "envFrom": [{"secretRef": {"name": credentials_secret_name(command.attempt_id)}}],
         "env": [{"name": "E3_S3_ENDPOINT_URL", "value": config.s3_endpoint_url}],
     }
     return {

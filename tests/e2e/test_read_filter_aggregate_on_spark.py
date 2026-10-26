@@ -22,12 +22,14 @@ from kubernetes_asyncio.client import ApiClient, CoreV1Api, CustomObjectsApi
 
 from e3.execution.controller import ExecutionController
 from e3.execution.kubernetes import KubernetesSparkApplications
+from e3.execution.main import attempt_credentials
 from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import ATTEMPT_LABEL, COMMAND_ANNOTATION, GROUP, PLURAL, VERSION
 from e3.settings import Settings
 from e3.shared.contracts import ExecutionContext, ExecutionResult
 from e3.shared.manifest import Manifest
 from e3.shared.messages import ExecutionEvent, parse_command
+from tests.e2e.cluster import attempt_secret, secret
 from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_filter_aggregate_graph
@@ -222,6 +224,31 @@ class _Unused:
         raise AssertionError("повторная команда не читает результат")
 
 
+async def test_each_attempt_ran_on_own_keys_owned_by_its_spark_application(
+    finished: FinishedRun,
+) -> None:
+    settings = ExecutionSettings()  # pyright: ignore[reportCallIssue]
+    await kube_config.load_kube_config()
+    owners: dict[str, list[str]] = {}
+    api = ApiClient()
+    try:
+        for block in BLOCKS:
+            attempt_id = finished.nodes[block]["attempt_id"]
+            [application] = await _applications(
+                CustomObjectsApi(api), settings.spark_namespace, attempt_id
+            )
+            found = await attempt_secret(attempt_id)
+            assert found is not None, block
+            owners[application["metadata"]["uid"]] = [
+                owner.uid for owner in found.metadata.owner_references
+            ]
+    finally:
+        await api.close()
+
+    assert all(uids == [uid] for uid, uids in owners.items())
+    assert await secret("e3-s3") is None
+
+
 async def test_redelivered_submit_execution_leaves_single_spark_application(
     finished: FinishedRun,
 ) -> None:
@@ -237,6 +264,7 @@ async def test_redelivered_submit_execution_leaves_single_spark_application(
             KubernetesSparkApplications(objects, CoreV1Api(api), settings.spark_namespace),
             _Unused(),
             _Unused(),
+            attempt_credentials(settings),
             settings.workload(),
         )
 
