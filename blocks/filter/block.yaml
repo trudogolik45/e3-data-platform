@@ -1,4 +1,4 @@
-# BlockSpec блока `Filter` для `e3-register-block`.
+# BlockSpec блока `Filter` для `n3-register-block`.
 # `executable_ref` подставляет сборка: digest образа из registry (см. scripts/e2e.sh).
 name: filter
 version: "1.0.0"

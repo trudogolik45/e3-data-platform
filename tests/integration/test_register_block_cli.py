@@ -9,9 +9,9 @@ import httpx
 import pytest
 import uvicorn
 
-from e3.api.app import create_app
-from e3.cli.register_block import main
-from e3.settings import Settings
+from n3.api.app import create_app
+from n3.cli.register_block import main
+from n3.settings import Settings
 from tests.integration.conftest import PLATFORM_TOKEN
 
 pytestmark = pytest.mark.integration
@@ -25,7 +25,7 @@ outputs:
   - name: data
     data_type: dataset
 parameters_schema: {{}}
-executable_ref: registry.local/e3/read@sha256:{digest}
+executable_ref: registry.local/n3/read@sha256:{digest}
 """
 
 
@@ -59,8 +59,8 @@ def spec_file(tmp_path: Path) -> Path:
 def test_cli_registers_block_through_running_api(
     api_url: str, spec_file: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("E3_API_URL", api_url)
-    monkeypatch.setenv("E3_PLATFORM_TOKEN", PLATFORM_TOKEN)
+    monkeypatch.setenv("N3_API_URL", api_url)
+    monkeypatch.setenv("N3_PLATFORM_TOKEN", PLATFORM_TOKEN)
 
     exit_code = main([str(spec_file)])
 
@@ -75,8 +75,8 @@ def test_cli_fails_when_api_refuses_token(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setenv("E3_API_URL", api_url)
-    monkeypatch.setenv("E3_PLATFORM_TOKEN", "wrong-token")
+    monkeypatch.setenv("N3_API_URL", api_url)
+    monkeypatch.setenv("N3_PLATFORM_TOKEN", "wrong-token")
 
     exit_code = main([str(spec_file)])
 

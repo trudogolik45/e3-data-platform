@@ -8,7 +8,7 @@ from typing import Any, cast
 import pytest
 from aiokafka.errors import KafkaConnectionError
 
-from e3.runs import RunOrchestrator, background, workers
+from n3.runs import RunOrchestrator, background, workers
 
 WAIT_SECONDS = 5
 

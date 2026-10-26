@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
-from e3.api.app import create_app
-from e3.settings import Settings
+from n3.api.app import create_app
+from n3.settings import Settings
 from tests.integration.conftest import (
     RUN_CSV,
     Api,

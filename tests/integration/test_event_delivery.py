@@ -5,8 +5,8 @@ from uuid import UUID, uuid4
 import pytest
 from aiokafka import AIOKafkaProducer
 
-from e3.runs import event_consumer
-from e3.shared.messages import EVENTS_TOPIC, ExecutionEvent, ExecutionStarted
+from n3.runs import event_consumer
+from n3.shared.messages import EVENTS_TOPIC, ExecutionEvent, ExecutionStarted
 
 pytestmark = pytest.mark.integration
 

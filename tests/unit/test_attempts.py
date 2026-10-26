@@ -2,8 +2,8 @@ from typing import get_args
 
 import pytest
 
-from e3.runs.attempts import MAX_ATTEMPTS, AttemptReason, should_retry
-from e3.shared.messages import FailureReason
+from n3.runs.attempts import MAX_ATTEMPTS, AttemptReason, should_retry
+from n3.shared.messages import FailureReason
 
 
 def test_every_controller_reason_is_attempt_reason() -> None:

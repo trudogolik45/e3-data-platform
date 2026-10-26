@@ -1,4 +1,4 @@
-# BlockSpec блока `Aggregate` для `e3-register-block`.
+# BlockSpec блока `Aggregate` для `n3-register-block`.
 # `executable_ref` подставляет сборка: digest образа из registry (см. scripts/e2e.sh).
 name: aggregate
 version: "1.0.0"

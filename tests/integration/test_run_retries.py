@@ -9,9 +9,9 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from e3.execution.workload import Pod
-from e3.shared.contracts import ExecutionResult
-from e3.shared.messages import (
+from n3.execution.workload import Pod
+from n3.shared.contracts import ExecutionResult
+from n3.shared.messages import (
     ExecutionEvent,
     ExecutionSucceeded,
     FailureReason,
@@ -166,7 +166,7 @@ async def test_repeated_success_during_finalizing_keeps_first_result(plant: Plan
     first = await plant.fake.succeed(command)
     await plant.consume_until(run_id, "read", "FINALIZING")
 
-    other = first.payload.model_copy(update={"outputs": {"elsewhere": "s3://e3-lake/x"}})
+    other = first.payload.model_copy(update={"outputs": {"elsewhere": "s3://n3-lake/x"}})
     await plant.fake.send(bypassing_inbox(first, other))
     await plant.events.poll(timeout_ms=1000)
     await plant.finish()
@@ -216,7 +216,7 @@ async def test_unprocessed_check_is_replaced_and_vanished_attempt_is_retried(
     first = await plant.submitted(run_id)
     controller = plant.fake.controller()
     await controller.handle(first)
-    await plant.fake.cluster.delete(f"e3-{first.attempt_id}")
+    await plant.fake.cluster.delete(f"n3-{first.attempt_id}")
     await age(plant, first.attempt_id, past_timeout(plant))
     await plant.orchestrator.reconcile_pending()
     [unprocessed] = await reconciles(plant, first.attempt_id)
@@ -238,7 +238,7 @@ async def test_unprocessed_check_is_replaced_and_vanished_attempt_is_retried(
     await plant.finish()
 
     assert check.event_id != unprocessed.event_id
-    assert plant.fake.cluster.items[f"e3-{first.attempt_id}"]["spec"]["suspend"] is True
+    assert plant.fake.cluster.items[f"n3-{first.attempt_id}"]["spec"]["suspend"] is True
     assert summary(await plant.attempts(run_id)) == [(1, "LOST", "LOST"), (2, "SUCCEEDED", None)]
     assert (await plant.api.run(run_id))["state"] == "SUCCEEDED"
 
@@ -263,7 +263,7 @@ async def test_restarts_mid_run_give_one_output_and_no_extra_attempts(plant: Pla
 
     await drain(plant.relay.publish_pending)
     assert await plant.fake.quiet_commands() == []
-    assert list(plant.fake.cluster.items) == [f"e3-{command.attempt_id}"]
+    assert list(plant.fake.cluster.items) == [f"n3-{command.attempt_id}"]
     assert len((await plant.node(run_id, "read"))["outputs"]) == 1
     assert summary(await plant.attempts(run_id)) == [(1, "SUCCEEDED", None)]
     assert (await plant.api.run(run_id))["state"] == "SUCCEEDED"
@@ -274,7 +274,7 @@ async def test_next_attempt_waits_until_pods_of_failed_one_are_gone(plant: Plant
     first = await plant.submitted(run_id)
     controller = plant.fake.controller()
     await controller.handle(first)
-    plant.fake.cluster.set_state(f"e3-{first.attempt_id}", "FAILED", error="executor lost")
+    plant.fake.cluster.set_state(f"n3-{first.attempt_id}", "FAILED", error="executor lost")
     plant.fake.cluster.set_pods(first.attempt_id, Pod(phase="Running", terminating=True))
 
     await controller.report()

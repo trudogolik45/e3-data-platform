@@ -694,71 +694,6 @@ wheels = [
 ]
 
 [[package]]
-name = "e3"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiokafka" },
-    { name = "alembic" },
-    { name = "asyncpg" },
-    { name = "boto3" },
-    { name = "fastapi" },
-    { name = "httpx" },
-    { name = "jsonschema" },
-    { name = "kubernetes-asyncio" },
-    { name = "pydantic-settings" },
-    { name = "pyjwt", extra = ["crypto"] },
-    { name = "pyyaml" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "uvicorn" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "boto3-stubs", extra = ["s3"] },
-    { name = "import-linter" },
-    { name = "pyarrow" },
-    { name = "pyright" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-    { name = "testcontainers", extra = ["minio"] },
-    { name = "types-jsonschema" },
-    { name = "types-pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiokafka", specifier = ">=0.14.0" },
-    { name = "alembic", specifier = ">=1.20.1" },
-    { name = "asyncpg", specifier = ">=0.32.0" },
-    { name = "boto3", specifier = ">=1.43.118" },
-    { name = "fastapi", specifier = ">=0.162.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "jsonschema", specifier = ">=4.26.0" },
-    { name = "kubernetes-asyncio", specifier = ">=36.1.0" },
-    { name = "pydantic-settings", specifier = ">=2.16.1" },
-    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.6" },
-    { name = "uvicorn", specifier = ">=0.54.0" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.43.118" },
-    { name = "import-linter", specifier = ">=2.15" },
-    { name = "pyarrow", specifier = ">=26.0.0" },
-    { name = "pyright", specifier = ">=1.1.414" },
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
-    { name = "ruff", specifier = ">=0.17.2" },
-    { name = "testcontainers", extras = ["minio", "postgres"], specifier = ">=4.15.0" },
-    { name = "types-jsonschema", specifier = ">=4.26.0.20261006" },
-    { name = "types-pyyaml", specifier = ">=6.0.12.20260906" },
-]
-
-[[package]]
 name = "fastapi"
 version = "0.162.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1365,6 +1300,71 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/46/db/e3922d6c62365c1098da97d9a775e78c66827df5cba11619a7d2a11cdae4/mypy_boto3_s3-1.43.106.tar.gz", hash = "sha256:731195f15830699a36e29d3c8abb2918bccd3587eb2edcb233f8046967893279", size = 79447, upload-time = "2026-09-30T22:44:48.472Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b8/4a/52419b5496215ab52c6c257134c1ac0da25c1ca5d802f133424d02a43686/mypy_boto3_s3-1.43.106-py3-none-any.whl", hash = "sha256:e233d04dbcf3925522dff4346e75c37344ec3d1cbb82337e5eed2af263847668", size = 86791, upload-time = "2026-09-30T22:44:46.139Z" },
+]
+
+[[package]]
+name = "n3"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiokafka" },
+    { name = "alembic" },
+    { name = "asyncpg" },
+    { name = "boto3" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "jsonschema" },
+    { name = "kubernetes-asyncio" },
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyyaml" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "uvicorn" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "boto3-stubs", extra = ["s3"] },
+    { name = "import-linter" },
+    { name = "pyarrow" },
+    { name = "pyright" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+    { name = "testcontainers", extra = ["minio"] },
+    { name = "types-jsonschema" },
+    { name = "types-pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiokafka", specifier = ">=0.14.0" },
+    { name = "alembic", specifier = ">=1.20.1" },
+    { name = "asyncpg", specifier = ">=0.32.0" },
+    { name = "boto3", specifier = ">=1.43.118" },
+    { name = "fastapi", specifier = ">=0.162.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
+    { name = "jsonschema", specifier = ">=4.26.0" },
+    { name = "kubernetes-asyncio", specifier = ">=36.1.0" },
+    { name = "pydantic-settings", specifier = ">=2.16.1" },
+    { name = "pyjwt", extras = ["crypto"], specifier = ">=2.15.1" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.6" },
+    { name = "uvicorn", specifier = ">=0.54.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "boto3-stubs", extras = ["s3"], specifier = ">=1.43.118" },
+    { name = "import-linter", specifier = ">=2.15" },
+    { name = "pyarrow", specifier = ">=26.0.0" },
+    { name = "pyright", specifier = ">=1.1.414" },
+    { name = "pytest", specifier = ">=9.1.1" },
+    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "ruff", specifier = ">=0.17.2" },
+    { name = "testcontainers", extras = ["minio", "postgres"], specifier = ">=4.15.0" },
+    { name = "types-jsonschema", specifier = ">=4.26.0.20261006" },
+    { name = "types-pyyaml", specifier = ">=6.0.12.20260906" },
 ]
 
 [[package]]

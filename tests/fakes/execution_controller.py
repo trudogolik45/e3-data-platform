@@ -30,12 +30,12 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRecord, TopicPa
 from aiokafka.admin import AIOKafkaAdminClient
 from mypy_boto3_s3 import S3Client
 
-from e3.execution.controller import ExecutionController
-from e3.execution.results import StoredResults
-from e3.execution.workload import Pod, WorkloadConfig, workload_name
-from e3.shared.contracts import RESULT_FILE, ExecutionResult, ResolvedInput
-from e3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
-from e3.shared.messages import (
+from n3.execution.controller import ExecutionController
+from n3.execution.results import StoredResults
+from n3.execution.workload import Pod, WorkloadConfig, workload_name
+from n3.shared.contracts import RESULT_FILE, ExecutionResult, ResolvedInput
+from n3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
+from n3.shared.messages import (
     COMMANDS_TOPIC,
     EVENTS_TOPIC,
     Command,
@@ -49,7 +49,7 @@ from e3.shared.messages import (
     started,
     succeeded,
 )
-from e3.shared.storage import ObjectStorage
+from n3.shared.storage import ObjectStorage
 from tests.fakes.spark_applications import InMemorySparkApplications
 
 DATA_FILE = "data/part-00000.parquet"
@@ -60,7 +60,7 @@ WORKLOAD = WorkloadConfig(
     service_account="spark-operator-spark",
     spark_version="3.5.9",
     s3_endpoint_url="http://minio:9000",
-    s3_secret="e3-s3",
+    s3_secret="n3-s3",
 )
 
 

@@ -74,7 +74,7 @@ def upgrade() -> None:
     )
     op.execute(
         f"INSERT INTO {SCHEMA}.users (id, issuer, subject)"
-        f" VALUES ('{LEGACY_MIGRATION_USER_ID}', 'urn:e3:system', 'legacy_migration')"
+        f" VALUES ('{LEGACY_MIGRATION_USER_ID}', 'urn:n3:system', 'legacy_migration')"
     )
     op.add_column(
         "pipeline_runs", sa.Column("initiated_by_user_id", sa.Uuid(), nullable=True), schema="runs"

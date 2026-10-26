@@ -3,7 +3,7 @@ import hashlib
 
 import pytest
 
-from e3.catalog.inspection import (
+from n3.catalog.inspection import (
     HEADER_READ_LIMIT,
     MAX_UPLOAD_BYTES,
     Column,

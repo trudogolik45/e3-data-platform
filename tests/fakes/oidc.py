@@ -8,8 +8,8 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 from jwt.algorithms import RSAAlgorithm
 
-ISSUER = "https://idp.test/e3"
-AUDIENCE = "e3-api"
+ISSUER = "https://idp.test/n3"
+AUDIENCE = "n3-api"
 JWKS_URL = f"{ISSUER}/jwks"
 
 
@@ -50,7 +50,7 @@ class FakeOidcProvider:
             "sub": subject,
             "iat": now,
             "exp": now + 300,
-            "email": email or f"{subject}@e3.test",
+            "email": email or f"{subject}@n3.test",
             "email_verified": email_verified,
             **claims,
         }

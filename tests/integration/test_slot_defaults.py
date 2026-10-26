@@ -4,10 +4,10 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from e3.api.app import create_app
-from e3.catalog import Catalog
-from e3.settings import Settings
-from e3.shared.contracts import DatasetVersionRef
+from n3.api.app import create_app
+from n3.catalog import Catalog
+from n3.settings import Settings
+from n3.shared.contracts import DatasetVersionRef
 from tests.integration.conftest import (
     Api,
     Plant,

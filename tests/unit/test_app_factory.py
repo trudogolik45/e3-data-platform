@@ -1,8 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from e3.api.app import create_app
-from e3.settings import Settings
+from n3.api.app import create_app
+from n3.settings import Settings
 
 
 def test_app_refuses_to_start_with_dev_auth_outside_dev() -> None:
@@ -13,7 +13,7 @@ def test_app_refuses_to_start_with_dev_auth_outside_dev() -> None:
 
 
 def test_settings_require_explicit_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("E3_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("N3_ENVIRONMENT", raising=False)
 
     with pytest.raises(ValidationError, match="environment"):
         Settings(_env_file=None)  # type: ignore[call-arg]
@@ -31,7 +31,7 @@ def test_oidc_mode_refuses_symmetric_algorithms() -> None:
         environment="prod",
         auth_mode="oidc",
         oidc_issuer="https://idp.test",
-        oidc_audience="e3-api",
+        oidc_audience="n3-api",
         oidc_jwks_url="https://idp.test/jwks",
         oidc_algorithms=["HS256"],
     )

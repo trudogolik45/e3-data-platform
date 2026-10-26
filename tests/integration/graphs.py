@@ -22,7 +22,7 @@ def block_spec(
         "inputs": inputs,
         "outputs": outputs,
         "parameters_schema": parameters_schema or {},
-        "executable_ref": "registry.local/e3/" + name + "@sha256:" + "e" * 64,
+        "executable_ref": "registry.local/n3/" + name + "@sha256:" + "e" * 64,
     }
 
 

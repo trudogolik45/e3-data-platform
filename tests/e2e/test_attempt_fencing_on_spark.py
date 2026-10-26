@@ -1,7 +1,7 @@
 """E2E на kind: Attempt Fence, ретрай пропавшей попытки (ADR-0003) и отмена запуска.
 
-Запускает `scripts/e2e.sh` с коротким `E3_RECONCILE_AFTER_SECONDS`, чтобы
-reconciliation успела за время теста. Без `E3_E2E_API_URL` тесты пропускаются.
+Запускает `scripts/e2e.sh` с коротким `N3_RECONCILE_AFTER_SECONDS`, чтобы
+reconciliation успела за время теста. Без `N3_E2E_API_URL` тесты пропускаются.
 """
 
 import asyncio
@@ -16,10 +16,10 @@ import pytest
 from kubernetes_asyncio import config as kube_config
 from kubernetes_asyncio.client import ApiClient, CoreV1Api, CustomObjectsApi
 
-from e3.execution.controller import ExecutionController
-from e3.execution.kubernetes import KubernetesSparkApplications
-from e3.execution.settings import ExecutionSettings
-from e3.execution.workload import (
+from n3.execution.controller import ExecutionController
+from n3.execution.kubernetes import KubernetesSparkApplications
+from n3.execution.settings import ExecutionSettings
+from n3.execution.workload import (
     COMMAND_ANNOTATION,
     GROUP,
     PLURAL,
@@ -29,8 +29,8 @@ from e3.execution.workload import (
     is_fence,
     workload_name,
 )
-from e3.shared.contracts import ExecutionContext, ExecutionResult
-from e3.shared.messages import (
+from n3.shared.contracts import ExecutionContext, ExecutionResult
+from n3.shared.messages import (
     ExecutionEvent,
     Submission,
     SubmitExecution,
@@ -41,7 +41,7 @@ from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_graph
 
-API_URL = os.environ.get("E3_E2E_API_URL")
+API_URL = os.environ.get("N3_E2E_API_URL")
 
 pytestmark = pytest.mark.skipif(API_URL is None, reason="E2E запускает scripts/e2e.sh")
 
@@ -50,7 +50,7 @@ TIMEOUT_SECONDS = 600
 POLL_SECONDS = 1
 # Сколько ждать, что оператор не поднимет pod'ы огороженной попытки.
 SUSPEND_WATCH_SECONDS = 20
-IMAGE = "localhost:5001/e3-read@sha256:" + "0" * 64
+IMAGE = "localhost:5001/n3-read@sha256:" + "0" * 64
 
 
 class _Unused:
@@ -94,7 +94,7 @@ def submission() -> SubmitExecution:
         attempt_id=attempt_id,
         inputs={},
         parameters={},
-        output_prefix=f"s3://e3-lake/staging/executions/{attempt_id}",
+        output_prefix=f"s3://n3-lake/staging/executions/{attempt_id}",
     )
     return SubmitExecution(
         node_run_id=node_run_id,

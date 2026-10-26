@@ -4,8 +4,8 @@
 #
 # Поднимает kind с локальным OCI registry и Spark Operator, Control Plane через
 # docker compose, собирает и пушит образы блоков, регистрирует их digest через
-# `e3-register-block`, запускает `e3-execution-controller` и гоняет tests/e2e.
-# В конце всё разбирает; E3_E2E_KEEP=1 оставляет стенд для отладки.
+# `n3-register-block`, запускает `n3-execution-controller` и гоняет tests/e2e.
+# В конце всё разбирает; N3_E2E_KEEP=1 оставляет стенд для отладки.
 #
 # Нужны Docker, helm и uv. kind (и kubectl, если его нет) скачиваются в .cache/bin.
 set -euo pipefail
@@ -17,16 +17,16 @@ WORK="$CACHE/e2e"
 KIND_VERSION=v0.33.0
 KUBECTL_VERSION=v1.37.1
 SPARK_OPERATOR_VERSION=2.5.2
-CLUSTER=e3-e2e
-REGISTRY=e3-kind-registry
+CLUSTER=n3-e2e
+REGISTRY=n3-kind-registry
 REGISTRY_PORT=5001 # 5000 на macOS занят AirPlay
 BLOCKS=(read filter aggregate)
-PLATFORM_TOKEN=dev-platform-token # E3_PLATFORM_TOKEN сервиса api в docker-compose.yml
+PLATFORM_TOKEN=dev-platform-token # N3_PLATFORM_TOKEN сервиса api в docker-compose.yml
 
 export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
-export COMPOSE_PROJECT_NAME=e3-e2e
+export COMPOSE_PROJECT_NAME=n3-e2e
 # Удалённую посреди запуска попытку reconciliation должна найти за секунды, а не минуты.
-export E3_RECONCILE_AFTER_SECONDS=15
+export N3_RECONCILE_AFTER_SECONDS=15
 export PATH="$CACHE/bin:$PATH"
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -78,8 +78,8 @@ teardown() {
     kubectl get events -A --sort-by=.lastTimestamp 2>/dev/null | tail -50
     compose logs --tail=50 api 2>/dev/null
   fi
-  if [[ "${E3_E2E_KEEP:-}" == 1 ]]; then
-    log "E3_E2E_KEEP=1: стенд оставлен (KUBECONFIG=$KUBECONFIG)"
+  if [[ "${N3_E2E_KEEP:-}" == 1 ]]; then
+    log "N3_E2E_KEEP=1: стенд оставлен (KUBECONFIG=$KUBECONFIG)"
     exit $status
   fi
   log "разбираем стенд"
@@ -132,38 +132,38 @@ start_control_plane() {
   until curl -fsS http://localhost:8000/docs >/dev/null 2>&1; do sleep 1; done
   # Топики создаёт Run Orchestrator при старте API; controller слушает уже готовые.
   until compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
-    --list | grep -qx e3.execution.commands.v1; do sleep 1; done
+    --list | grep -qx n3.execution.commands.v1; do sleep 1; done
   local minio
   minio=$(compose ps -q minio)
   connect_to_kind "$minio"
   MINIO_IN_KIND=$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$minio")
-  kubectl create secret generic e3-s3 \
+  kubectl create secret generic n3-s3 \
     --from-literal=AWS_ACCESS_KEY_ID=minioadmin --from-literal=AWS_SECRET_ACCESS_KEY=minioadmin \
     --dry-run=client -o yaml | kubectl apply -f -
 }
 
 register_block() {
-  local block=$1 image="localhost:$REGISTRY_PORT/e3-$1:e2e" digest
+  local block=$1 image="localhost:$REGISTRY_PORT/n3-$1:e2e" digest
   log "образ $block → $image"
   docker build -q -f "$ROOT/blocks/Dockerfile" --build-arg "BLOCK=$block" -t "$image" "$ROOT" >/dev/null
   docker push -q "$image" >/dev/null
   digest=$(docker inspect -f '{{index .RepoDigests 0}}' "$image")
   sed "s|@EXECUTABLE_REF@|$digest|" "$ROOT/blocks/$block/block.yaml" >"$WORK/$block.yaml"
-  E3_API_URL=http://localhost:8000 E3_PLATFORM_TOKEN=$PLATFORM_TOKEN \
-    uv run --project "$ROOT" e3-register-block "$WORK/$block.yaml"
+  N3_API_URL=http://localhost:8000 N3_PLATFORM_TOKEN=$PLATFORM_TOKEN \
+    uv run --project "$ROOT" n3-register-block "$WORK/$block.yaml"
 }
 
 controller_env() {
-  export E3_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
-  export E3_S3_ENDPOINT_URL=http://localhost:9000
-  export E3_SPARK_S3_ENDPOINT_URL="http://$MINIO_IN_KIND:9000"
+  export N3_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+  export N3_S3_ENDPOINT_URL=http://localhost:9000
+  export N3_SPARK_S3_ENDPOINT_URL="http://$MINIO_IN_KIND:9000"
   # На 2 vCPU раннера CI целое ядро на driver и executor не помещается рядом с системой kind.
-  export E3_SPARK_CORE_REQUEST=250m
+  export N3_SPARK_CORE_REQUEST=250m
 }
 
 start_controller() {
-  log "e3-execution-controller (лог: $WORK/controller.log)"
-  uv run --project "$ROOT" e3-execution-controller >"$WORK/controller.log" 2>&1 &
+  log "n3-execution-controller (лог: $WORK/controller.log)"
+  uv run --project "$ROOT" n3-execution-controller >"$WORK/controller.log" 2>&1 &
   CONTROLLER_PID=$!
 }
 
@@ -178,7 +178,7 @@ main() {
   controller_env
   start_controller
   log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence"
-  E3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
+  N3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
 }
 
 main "$@"

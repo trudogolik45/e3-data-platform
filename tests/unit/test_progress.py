@@ -1,6 +1,6 @@
 from uuid import UUID, uuid4
 
-from e3.runs.progress import NodeProgress, NodeState, RunState, plan
+from n3.runs.progress import NodeProgress, NodeState, RunState, plan
 
 READ, PUBLISH = uuid4(), uuid4()
 

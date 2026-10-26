@@ -3,8 +3,8 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from e3.api.app import create_app
-from e3.identity import (
+from n3.api.app import create_app
+from n3.identity import (
     Identity,
     IdentityService,
     LastAdmin,
@@ -14,11 +14,11 @@ from e3.identity import (
     UserAmbiguous,
     UserNotFound,
 )
-from e3.settings import Settings
+from n3.settings import Settings
 
 pytestmark = pytest.mark.integration
 
-ISSUER = "https://idp.test/e3"
+ISSUER = "https://idp.test/n3"
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def identity(settings: Settings) -> IdentityService:
 
 def person(subject: str | None = None, *, email: str | None = None, verified: bool = True):
     subject = subject or uuid4().hex
-    return Identity(ISSUER, subject, email or f"{subject}@e3.test", verified)
+    return Identity(ISSUER, subject, email or f"{subject}@n3.test", verified)
 
 
 async def signed_in(identity: IdentityService, **kwargs: object) -> UUID:
@@ -45,7 +45,7 @@ async def test_first_sign_in_creates_user_and_next_one_reuses_it(
     identity: IdentityService,
 ) -> None:
     subject = uuid4().hex
-    old, new = f"old-{subject}@e3.test", f"new-{subject}@e3.test"
+    old, new = f"old-{subject}@n3.test", f"new-{subject}@n3.test"
     first = await identity.sign_in(person(subject, email=old))
 
     again = await identity.sign_in(person(subject, email=new))
@@ -147,7 +147,7 @@ async def test_parallel_demotions_keep_one_admin(identity: IdentityService) -> N
 
 
 async def test_unverified_email_is_not_searchable(identity: IdentityService) -> None:
-    email = f"{uuid4().hex}@e3.test"
+    email = f"{uuid4().hex}@n3.test"
     await signed_in(identity, email=email, verified=False)
 
     with pytest.raises(UserNotFound):
@@ -155,7 +155,7 @@ async def test_unverified_email_is_not_searchable(identity: IdentityService) -> 
 
 
 async def test_email_shared_by_two_users_is_ambiguous(identity: IdentityService) -> None:
-    email = f"{uuid4().hex}@e3.test"
+    email = f"{uuid4().hex}@n3.test"
     await signed_in(identity, email=email)
     await signed_in(identity, email=email)
 
@@ -174,7 +174,7 @@ async def test_user_is_found_by_id(identity: IdentityService) -> None:
 async def test_unverified_email_is_not_kept(identity: IdentityService) -> None:
     admin = await signed_in(identity)
     project = await new_project(identity, admin)
-    stranger = await signed_in(identity, email=f"{uuid4().hex}@e3.test", verified=False)
+    stranger = await signed_in(identity, email=f"{uuid4().hex}@n3.test", verified=False)
     await identity.add_member(project, stranger, Role.VIEWER)
 
     member = await identity.member(project, stranger)

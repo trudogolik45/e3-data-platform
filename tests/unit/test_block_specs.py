@@ -7,10 +7,10 @@ import pytest
 import yaml
 from jsonschema import Draft202012Validator
 
-from e3.shared.contracts import BlockSpec
+from n3.shared.contracts import BlockSpec
 
 BLOCKS = Path(__file__).resolve().parents[2] / "blocks"
-DIGEST = "registry.local/e3/block@sha256:" + "c" * 64
+DIGEST = "registry.local/n3/block@sha256:" + "c" * 64
 
 
 def spec(name: str) -> BlockSpec:

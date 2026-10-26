@@ -7,9 +7,9 @@ from uuid import UUID
 
 import pytest
 
-from e3.execution.controller import ExecutionController
-from e3.execution.workload import Pod
-from e3.shared.messages import CancelExecution, ReconcileExecution, SubmitExecution
+from n3.execution.controller import ExecutionController
+from n3.execution.workload import Pod
+from n3.shared.messages import CancelExecution, ReconcileExecution, SubmitExecution
 from tests.integration.conftest import (
     Plant,
     age,
@@ -96,7 +96,7 @@ async def test_cancel_of_queued_node_fences_it_and_late_submit_starts_no_spark(
     await controller.report()
     await plant.consume_until(run_id, "read", "CANCELLED")
 
-    assert plant.fake.cluster.items[f"e3-{command.attempt_id}"]["spec"]["suspend"] is True
+    assert plant.fake.cluster.items[f"n3-{command.attempt_id}"]["spec"]["suspend"] is True
     [attempt] = await plant.attempts(run_id)
     assert (attempt["state"], attempt["started_at"]) == ("CANCELLED", None)
     assert (await plant.api.run(run_id))["state"] == "CANCELLED"

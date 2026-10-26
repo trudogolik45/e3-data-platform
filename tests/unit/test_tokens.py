@@ -3,7 +3,7 @@ import time
 import jwt
 import pytest
 
-from e3.identity import InvalidToken, JwksUnavailable, TokenVerifier
+from n3.identity import InvalidToken, JwksUnavailable, TokenVerifier
 from tests.fakes.oidc import AUDIENCE, ISSUER, JWKS_URL, FakeOidcProvider
 
 

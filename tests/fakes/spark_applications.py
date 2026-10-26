@@ -7,7 +7,7 @@
 from typing import Any
 from uuid import UUID
 
-from e3.execution.workload import REPORTED_LABEL, Pod, Reported
+from n3.execution.workload import REPORTED_LABEL, Pod, Reported
 
 
 class InMemorySparkApplications:

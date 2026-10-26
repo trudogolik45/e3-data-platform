@@ -3,10 +3,10 @@ from uuid import uuid4
 import pytest
 from mypy_boto3_s3 import S3Client
 
-from e3.api.app import create_app
-from e3.catalog import Catalog, PublicationRejected
-from e3.settings import Settings
-from e3.shared.contracts import NodeOutputRef
+from n3.api.app import create_app
+from n3.catalog import Catalog, PublicationRejected
+from n3.settings import Settings
+from n3.shared.contracts import NodeOutputRef
 from tests.fakes.execution_controller import write_parquet_output
 from tests.integration.conftest import Api, read_object
 

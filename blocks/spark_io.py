@@ -4,7 +4,7 @@ Spark Operator запускает `main.py '<ExecutionContext JSON>'`. Блок 
 `source` по его manifest, преобразует DataFrame и пишет только под
 `output_prefix`: данные и manifest выхода, затем свой ExecutionResult в
 `result.json` — его забирает Execution Controller. Ключи S3 — из окружения
-(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), адрес — `E3_S3_ENDPOINT_URL`.
+(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), адрес — `N3_S3_ENDPOINT_URL`.
 
 Spark работает в ANSI-режиме: неверное приведение типа и переполнение роняют
 блок, а не превращаются молча в `null`.
@@ -22,8 +22,8 @@ from botocore.config import Config
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.types import DoubleType, LongType, StringType
 
-from e3.shared.contracts import RESULT_FILE, ExecutionContext, ExecutionResult, ResolvedInput
-from e3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
+from n3.shared.contracts import RESULT_FILE, ExecutionContext, ExecutionResult, ResolvedInput
+from n3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
 
 INPUT_PORT = "source"
 DATA_DIR = "parquet"
@@ -44,10 +44,10 @@ def run(name: str, output_port: str, transform: Transform) -> None:
     context = ExecutionContext.model_validate_json(sys.argv[1])
     s3 = boto3.client(
         "s3",
-        endpoint_url=os.environ["E3_S3_ENDPOINT_URL"],
+        endpoint_url=os.environ["N3_S3_ENDPOINT_URL"],
         config=Config(s3={"addressing_style": "path"}),
     )
-    spark = session(f"e3-{name}-{context.attempt_id}")
+    spark = session(f"n3-{name}-{context.attempt_id}")
     try:
         result = execute(spark, s3, context, output_port, transform)
     finally:

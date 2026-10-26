@@ -7,8 +7,8 @@ import httpx
 
 from tests.integration.conftest import Api
 
-OIDC_URL = os.environ.get("E3_E2E_OIDC_URL", "http://localhost:8080/e3")
-PLATFORM_TOKEN = os.environ.get("E3_E2E_PLATFORM_TOKEN", "dev-platform-token")
+OIDC_URL = os.environ.get("N3_E2E_OIDC_URL", "http://localhost:8080/n3")
+PLATFORM_TOKEN = os.environ.get("N3_E2E_PLATFORM_TOKEN", "dev-platform-token")
 
 
 async def project_api(client: httpx.AsyncClient) -> Api:

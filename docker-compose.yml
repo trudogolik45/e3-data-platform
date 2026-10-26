@@ -2,12 +2,12 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: e3
-      POSTGRES_PASSWORD: e3
-      POSTGRES_DB: e3
+      POSTGRES_USER: n3
+      POSTGRES_PASSWORD: n3
+      POSTGRES_DB: n3
     ports: ["5432:5432"]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U e3"]
+      test: ["CMD-SHELL", "pg_isready -U n3"]
       interval: 2s
       retries: 30
 
@@ -53,19 +53,19 @@ services:
     command:
       - >
         until aws --endpoint-url http://minio:9000 s3api list-buckets >/dev/null 2>&1; do sleep 1; done;
-        aws --endpoint-url http://minio:9000 s3api head-bucket --bucket e3-lake 2>/dev/null
-        || aws --endpoint-url http://minio:9000 s3api create-bucket --bucket e3-lake
+        aws --endpoint-url http://minio:9000 s3api head-bucket --bucket n3-lake 2>/dev/null
+        || aws --endpoint-url http://minio:9000 s3api create-bucket --bucket n3-lake
 
   oidc:
     # Только для локальной разработки и e2e: выдаёт JWT любому client_id без пароля.
-    # Токен: POST http://localhost:8080/e3/token, grant_type=client_credentials, client_id=<логин>.
+    # Токен: POST http://localhost:8080/n3/token, grant_type=client_credentials, client_id=<логин>.
     image: ghcr.io/navikt/mock-oauth2-server:6.1.3
     environment:
       JSON_CONFIG: >
-        {"tokenCallbacks": [{"issuerId": "e3", "tokenExpiry": 3600, "requestMappings": [
+        {"tokenCallbacks": [{"issuerId": "n3", "tokenExpiry": 3600, "requestMappings": [
           {"requestParam": "client_id", "match": "*", "claims": {
-            "sub": "$${clientId}", "aud": ["e3-api"],
-            "email": "$${clientId}@e3.local", "email_verified": true}}]}]}
+            "sub": "$${clientId}", "aud": ["n3-api"],
+            "email": "$${clientId}@n3.local", "email_verified": true}}]}]}
     ports: ["8080:8080"]
 
   api:
@@ -76,18 +76,18 @@ services:
       minio-init: { condition: service_completed_successfully }
       oidc: { condition: service_started }
     environment:
-      E3_ENVIRONMENT: dev
-      E3_AUTH_MODE: oidc
+      N3_ENVIRONMENT: dev
+      N3_AUTH_MODE: oidc
       # `iss` — адрес, по которому токен берут с хоста; ключи API читает изнутри сети compose.
-      E3_OIDC_ISSUER: http://localhost:8080/e3
-      E3_OIDC_AUDIENCE: e3-api
-      E3_OIDC_JWKS_URL: http://oidc:8080/e3/jwks
-      E3_DATABASE_URL: postgresql+asyncpg://e3:e3@postgres:5432/e3
-      E3_S3_ENDPOINT_URL: http://minio:9000
-      E3_S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
-      E3_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
+      N3_OIDC_ISSUER: http://localhost:8080/n3
+      N3_OIDC_AUDIENCE: n3-api
+      N3_OIDC_JWKS_URL: http://oidc:8080/n3/jwks
+      N3_DATABASE_URL: postgresql+asyncpg://n3:n3@postgres:5432/n3
+      N3_S3_ENDPOINT_URL: http://minio:9000
+      N3_S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      N3_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       # E2E укорачивает таймаут reconciliation, чтобы потерянная попытка нашлась за время теста.
-      E3_RECONCILE_AFTER_SECONDS: ${E3_RECONCILE_AFTER_SECONDS:-600}
+      N3_RECONCILE_AFTER_SECONDS: ${N3_RECONCILE_AFTER_SECONDS:-600}
       # Только для локальной разработки: токен admin API регистрации блоков.
-      E3_PLATFORM_TOKEN: dev-platform-token
+      N3_PLATFORM_TOKEN: dev-platform-token
     ports: ["8000:8000"]

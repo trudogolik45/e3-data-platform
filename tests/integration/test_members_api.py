@@ -19,9 +19,9 @@ async def me(world: World, token: str) -> dict[str, object]:
 
 async def test_next_sign_in_with_another_email_is_the_same_user(world: World) -> None:
     subject = uuid4().hex
-    first = await me(world, world.oidc.token(subject, email=f"old-{subject}@e3.test"))
+    first = await me(world, world.oidc.token(subject, email=f"old-{subject}@n3.test"))
 
-    again = await me(world, world.oidc.token(subject, email=f"new-{subject}@e3.test"))
+    again = await me(world, world.oidc.token(subject, email=f"new-{subject}@n3.test"))
 
     assert again["user_id"] == first["user_id"]
 
@@ -45,7 +45,7 @@ async def add(
 async def test_member_is_added_by_verified_email(world: World) -> None:
     admin = await world.user()
     project_id = await world.project(admin)
-    email = f"{uuid4().hex}@e3.test"
+    email = f"{uuid4().hex}@n3.test"
     joined = await me(world, world.oidc.token(uuid4().hex, email=email))
 
     response = await add(world, project_id, admin, {"email": email, "role": "Editor"})
@@ -57,7 +57,7 @@ async def test_member_is_added_by_verified_email(world: World) -> None:
 async def test_unverified_email_finds_nobody(world: World) -> None:
     admin = await world.user()
     project_id = await world.project(admin)
-    email = f"{uuid4().hex}@e3.test"
+    email = f"{uuid4().hex}@n3.test"
     await me(world, world.oidc.token(uuid4().hex, email=email, email_verified=False))
 
     response = await add(world, project_id, admin, {"email": email, "role": "Viewer"})
@@ -77,7 +77,7 @@ async def test_user_who_never_signed_in_cannot_be_added(world: World) -> None:
 async def test_member_is_added_by_exactly_one_of_id_and_email(world: World) -> None:
     admin = await world.user()
     project_id = await world.project(admin)
-    body = {"user_id": str(admin.user_id), "email": "x@e3.test", "role": "Viewer"}
+    body = {"user_id": str(admin.user_id), "email": "x@n3.test", "role": "Viewer"}
 
     assert (await add(world, project_id, admin, body)).status_code == 422
     assert (await add(world, project_id, admin, {"role": "Viewer"})).status_code == 422
@@ -113,7 +113,7 @@ async def test_project_admin_must_have_signed_in(world: World) -> None:
     body = {
         "organization_id": organization.json()["organization_id"],
         "name": "p",
-        "admin": {"email": f"{uuid4().hex}@e3.test"},
+        "admin": {"email": f"{uuid4().hex}@n3.test"},
     }
 
     assert (await platform.post("/api/v1/projects", json=body)).status_code == 404

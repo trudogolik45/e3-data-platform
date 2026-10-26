@@ -1,7 +1,7 @@
 [project]
-name = "e3"
+name = "n3"
 version = "0.1.0"
-description = "E3 Data Platform — Control Plane и Execution Controller"
+description = "N3 Data Platform — Control Plane и Execution Controller"
 authors = [
     { name = "trudogolik45", email = "210735425+trudogolik45@users.noreply.github.com" }
 ]
@@ -41,9 +41,9 @@ dev = [
 ]
 
 [project.scripts]
-e3-contracts-schema = "e3.shared.schemas:print_json_schema"
-e3-register-block = "e3.cli.register_block:main"
-e3-execution-controller = "e3.execution.main:main"
+n3-contracts-schema = "n3.shared.schemas:print_json_schema"
+n3-register-block = "n3.cli.register_block:main"
+n3-execution-controller = "n3.execution.main:main"
 
 [tool.ruff]
 line-length = 100
@@ -76,80 +76,80 @@ testpaths = ["tests"]
 markers = ["integration: требует Docker (PostgreSQL, MinIO и Kafka через testcontainers)"]
 
 [tool.importlinter]
-root_package = "e3"
+root_package = "n3"
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Внутренности identity видны только identity"
 type = "protected"
-protected_modules = ["e3.identity.*"]
-allowed_importers = ["e3.identity"]
+protected_modules = ["n3.identity.*"]
+allowed_importers = ["n3.identity"]
 
 [[tool.importlinter.contracts]]
 name = "Внутренности catalog видны только catalog"
 type = "protected"
-protected_modules = ["e3.catalog.*"]
-allowed_importers = ["e3.catalog"]
+protected_modules = ["n3.catalog.*"]
+allowed_importers = ["n3.catalog"]
 
 [[tool.importlinter.contracts]]
 name = "Внутренности blocks видны только blocks"
 type = "protected"
-protected_modules = ["e3.blocks.*"]
-allowed_importers = ["e3.blocks"]
+protected_modules = ["n3.blocks.*"]
+allowed_importers = ["n3.blocks"]
 
 [[tool.importlinter.contracts]]
 name = "Внутренности pipelines видны только pipelines"
 type = "protected"
-protected_modules = ["e3.pipelines.*"]
-allowed_importers = ["e3.pipelines"]
+protected_modules = ["n3.pipelines.*"]
+allowed_importers = ["n3.pipelines"]
 
 [[tool.importlinter.contracts]]
 name = "Внутренности runs видны только runs"
 type = "protected"
-protected_modules = ["e3.runs.*"]
-allowed_importers = ["e3.runs"]
+protected_modules = ["n3.runs.*"]
+allowed_importers = ["n3.runs"]
 
 [[tool.importlinter.contracts]]
 name = "shared не зависит от доменных модулей"
 type = "forbidden"
-source_modules = ["e3.shared"]
+source_modules = ["n3.shared"]
 forbidden_modules = [
-    "e3.identity",
-    "e3.catalog",
-    "e3.blocks",
-    "e3.pipelines",
-    "e3.runs",
-    "e3.api",
-    "e3.execution",
+    "n3.identity",
+    "n3.catalog",
+    "n3.blocks",
+    "n3.pipelines",
+    "n3.runs",
+    "n3.api",
+    "n3.execution",
 ]
 
 [[tool.importlinter.contracts]]
 name = "Код продукта не импортирует тесты и Fake Execution Controller"
 type = "forbidden"
-source_modules = ["e3"]
+source_modules = ["n3"]
 forbidden_modules = ["tests", "pyarrow"]
 
 [[tool.importlinter.contracts]]
 name = "CLI — тонкий HTTP-клиент: без слоя БД и доменных модулей"
 type = "forbidden"
-source_modules = ["e3.cli"]
+source_modules = ["n3.cli"]
 forbidden_modules = [
     "sqlalchemy",
     "asyncpg",
     "alembic",
-    "e3.identity",
-    "e3.catalog",
-    "e3.blocks",
-    "e3.pipelines",
-    "e3.runs",
-    "e3.api",
+    "n3.identity",
+    "n3.catalog",
+    "n3.blocks",
+    "n3.pipelines",
+    "n3.runs",
+    "n3.api",
 ]
 
 [[tool.importlinter.contracts]]
-name = "Execution Controller — Execution Plane: из e3 только e3.shared, без PostgreSQL (ADR-0001)"
+name = "Execution Controller — Execution Plane: из n3 только n3.shared, без PostgreSQL (ADR-0001)"
 type = "forbidden"
-source_modules = ["e3.execution"]
-# Любой пакет e3, кроме самого e3.execution и разрешённого ниже e3.shared:
+source_modules = ["n3.execution"]
+# Любой пакет n3, кроме самого n3.execution и разрешённого ниже n3.shared:
 # новый модуль Control Plane попадает под запрет без правки контракта.
-forbidden_modules = ["e3.*", "sqlalchemy", "asyncpg", "alembic", "fastapi"]
-ignore_imports = ["e3.execution.** -> e3.shared.**"]
+forbidden_modules = ["n3.*", "sqlalchemy", "asyncpg", "alembic", "fastapi"]
+ignore_imports = ["n3.execution.** -> n3.shared.**"]

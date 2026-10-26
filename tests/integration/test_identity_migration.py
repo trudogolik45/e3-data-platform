@@ -15,7 +15,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from testcontainers.community.postgres import PostgresContainer
 
-from e3.identity import LEGACY_MIGRATION_USER_ID
+from n3.identity import LEGACY_MIGRATION_USER_ID
 
 pytestmark = pytest.mark.integration
 

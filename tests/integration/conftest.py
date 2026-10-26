@@ -24,8 +24,8 @@ from testcontainers.community.minio import MinioContainer
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 
-from e3.api.app import create_app, create_storage
-from e3.runs import (
+from n3.api.app import create_app, create_storage
+from n3.runs import (
     EventConsumer,
     OutboxRelay,
     Publisher,
@@ -34,9 +34,9 @@ from e3.runs import (
     event_consumer,
     kafka_publisher,
 )
-from e3.settings import Settings
-from e3.shared.messages import ExecutionEvent, SubmitExecution
-from e3.shared.storage import ObjectStorage
+from n3.settings import Settings
+from n3.shared.messages import ExecutionEvent, SubmitExecution
+from n3.shared.storage import ObjectStorage
 from tests.fakes.execution_controller import FakeExecutionController
 from tests.fakes.oidc import AUDIENCE as OIDC_AUDIENCE
 from tests.fakes.oidc import ISSUER as OIDC_ISSUER
@@ -52,7 +52,7 @@ from tests.integration.graphs import (
 
 pytestmark = pytest.mark.integration
 
-BUCKET = "e3-lake"
+BUCKET = "n3-lake"
 PLATFORM_TOKEN = "platform-team-secret"
 KAFKA_IMAGE = "apache/kafka:4.4.0"
 KAFKA_STARTUP_ATTEMPTS = 60
@@ -171,7 +171,7 @@ def own_project(settings: Settings) -> Settings:
 
 def client_for(settings: Settings, storage: ObjectStorage | None = None) -> httpx.AsyncClient:
     app = create_app(settings, storage=storage)
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://e3")
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://n3")
 
 
 @pytest.fixture
@@ -528,7 +528,7 @@ async def plant(kafka: str, settings: Settings, s3: S3Client) -> AsyncIterator[P
     handler = Handler(orchestrator)
     transport = httpx.ASGITransport(app=app)
     async with (
-        httpx.AsyncClient(transport=transport, base_url="http://e3") as client,
+        httpx.AsyncClient(transport=transport, base_url="http://n3") as client,
         kafka_publisher(kafka) as publisher,
         event_consumer(kafka, f"test-{uuid4()}", handler) as events,
         FakeExecutionController(kafka, s3, settings.s3_bucket) as fake,
@@ -572,7 +572,7 @@ class World:
     async def client(self, token: str | None) -> httpx.AsyncClient:
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         client = httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=self.app), base_url="http://e3", headers=headers
+            transport=httpx.ASGITransport(app=self.app), base_url="http://n3", headers=headers
         )
         return await self._clients.enter_async_context(client)
 

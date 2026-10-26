@@ -4,12 +4,12 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from e3.settings import Settings
+from n3.settings import Settings
 from tests.integration.conftest import Api, client_for
 
 pytestmark = pytest.mark.integration
 
-DIGEST = "registry.local/e3/read@sha256:" + "b" * 64
+DIGEST = "registry.local/n3/read@sha256:" + "b" * 64
 
 
 def block_spec(**overrides: Any) -> dict[str, Any]:
@@ -76,7 +76,7 @@ async def test_block_registration_is_impossible_without_configured_token(
     assert empty_bearer.status_code in (401, 403)
 
 
-@pytest.mark.parametrize("ref", ["registry.local/e3/read:latest", "registry.local/e3/read:3.5"])
+@pytest.mark.parametrize("ref", ["registry.local/n3/read:latest", "registry.local/n3/read:3.5"])
 async def test_block_with_tag_instead_of_digest_is_invalid(api: Api, ref: str) -> None:
     response = await api.register_block(block_spec(executable_ref=ref))
 

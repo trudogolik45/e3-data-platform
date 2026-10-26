@@ -3,8 +3,8 @@ from uuid import uuid4
 import pytest
 from mypy_boto3_s3 import S3Client
 
-from e3.settings import Settings
-from e3.shared.manifest import Manifest
+from n3.settings import Settings
+from n3.shared.manifest import Manifest
 from tests.integration.conftest import Api, object_exists, sha256_b64
 
 pytestmark = pytest.mark.integration

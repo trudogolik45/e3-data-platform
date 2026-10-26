@@ -7,11 +7,11 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from e3.blocks.models import Base as BlocksBase
-from e3.catalog.models import Base as CatalogBase
-from e3.identity.models import Base as IdentityBase
-from e3.pipelines.models import Base as PipelinesBase
-from e3.runs.models import Base as RunsBase
+from n3.blocks.models import Base as BlocksBase
+from n3.catalog.models import Base as CatalogBase
+from n3.identity.models import Base as IdentityBase
+from n3.pipelines.models import Base as PipelinesBase
+from n3.runs.models import Base as RunsBase
 
 config = context.config
 
@@ -28,7 +28,7 @@ target_metadata = [
 
 
 def database_url() -> str:
-    return config.get_main_option("sqlalchemy.url") or os.environ["E3_DATABASE_URL"]
+    return config.get_main_option("sqlalchemy.url") or os.environ["N3_DATABASE_URL"]
 
 
 def run_migrations_offline() -> None:

@@ -9,8 +9,8 @@ import httpx
 import pytest
 from mypy_boto3_s3 import S3Client
 
-from e3.api.app import create_app
-from e3.settings import Settings
+from n3.api.app import create_app
+from n3.settings import Settings
 from tests.fakes.execution_controller import FakeExecutionController
 from tests.integration.conftest import Api, free_port, run_request
 
@@ -37,7 +37,7 @@ async def test_api_starts_and_accepts_runs_while_kafka_is_down(settings: Setting
     async with (
         asyncio.timeout(10),
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=transport, base_url="http://e3") as client,
+        httpx.AsyncClient(transport=transport, base_url="http://n3") as client,
     ):
         api = Api(client, settings.dev_project_id)
         response = await api.start_run(await run_request(api), key=str(uuid4()))
@@ -59,7 +59,7 @@ async def test_uploaded_csv_is_published_as_parquet_version(
     )
     async with (
         app.router.lifespan_context(app),
-        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://e3") as client,
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://n3") as client,
         FakeExecutionController(kafka, s3, settings.s3_bucket) as fake,
     ):
         api = Api(client, settings.dev_project_id)

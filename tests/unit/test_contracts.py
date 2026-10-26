@@ -4,16 +4,16 @@ from uuid import uuid4
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from e3.shared.contracts import (
+from n3.shared.contracts import (
     BlockSpec,
     DataRef,
     DatasetVersionRef,
     NodeOutputRef,
 )
-from e3.shared.manifest import Column
-from e3.shared.schemas import json_schemas
+from n3.shared.manifest import Column
+from n3.shared.schemas import json_schemas
 
-DIGEST = "registry.local/e3/read@sha256:" + "a" * 64
+DIGEST = "registry.local/n3/read@sha256:" + "a" * 64
 
 
 def block_spec(**overrides: Any) -> dict[str, Any]:
@@ -54,9 +54,9 @@ def test_block_spec_accepts_oci_digest() -> None:
 @pytest.mark.parametrize(
     "ref",
     [
-        "registry.local/e3/read:latest",
-        "registry.local/e3/read:3.5",
-        "registry.local/e3/read@sha256:abc",
+        "registry.local/n3/read:latest",
+        "registry.local/n3/read:3.5",
+        "registry.local/n3/read@sha256:abc",
         "@sha256:" + "a" * 64,
     ],
 )

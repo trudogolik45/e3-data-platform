@@ -15,12 +15,12 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from e3.api.app import create_app
-from e3.runs import RunOrchestrator
-from e3.runs.models import InboxRow, OutboxRow
-from e3.shared.contracts import DatasetVersionRef, NodeOutputRef
-from e3.shared.messages import failed, started, succeeded
-from e3.shared.storage import ObjectStorage, StorageUnavailable
+from n3.api.app import create_app
+from n3.runs import RunOrchestrator
+from n3.runs.models import InboxRow, OutboxRow
+from n3.shared.contracts import DatasetVersionRef, NodeOutputRef
+from n3.shared.messages import failed, started, succeeded
+from n3.shared.storage import ObjectStorage, StorageUnavailable
 from tests.integration.conftest import (
     Plant,
     drain,

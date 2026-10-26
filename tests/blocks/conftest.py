@@ -34,6 +34,6 @@ def spark():
     """Та же сессия, что у блоков в кластере, включая ANSI-режим; master — local."""
     from spark_io import session
 
-    spark = session("e3-block-tests")
+    spark = session("n3-block-tests")
     yield spark
     spark.stop()

@@ -1,14 +1,14 @@
-# E3 Data Platform — Target Architecture v1.0
+# N3 Data Platform — Target Architecture v1.0
 
 Greenfield · MVP Architecture
 
-Цель первой версии E3: пользователь загружает датасет, собирает DAG из вычислительных блоков, запускает распределённую обработку в Spark, получает версионированный результат в Data Lake и исследует его через Superset.
+Цель первой версии N3: пользователь загружает датасет, собирает DAG из вычислительных блоков, запускает распределённую обработку в Spark, получает версионированный результат в Data Lake и исследует его через Superset.
 
 Архитектуру проектируем с возможностью последующего расширения до ML/AI Platform, но без преждевременного внедрения ML-инфраструктуры.
 
 ## 1. Архитектурная схема
 
-E3 Web UI / SDK
+N3 Web UI / SDK
 
 Datasets · Pipeline Editor · Executions · Analytics
 
@@ -114,7 +114,7 @@ SQL exploration · Dashboards
 | `NodeOutput`       | Принятый логический выход NodeRun (READY)                         |
 | `Artifact`         | Физический объект хранения: файл данных, manifest, лог            |
 
-У каждого `PipelineRun` есть свой ID. У каждого `NodeRun` — свой `node_run_id`, сохраняющийся при повторных попытках. У каждой попытки — отдельный `attempt_id`. Имя `node_run_id` единое во всех контрактах E3, включая Kafka.
+У каждого `PipelineRun` есть свой ID. У каждого `NodeRun` — свой `node_run_id`, сохраняющийся при повторных попытках. У каждой попытки — отдельный `attempt_id`. Имя `node_run_id` единое во всех контрактах N3, включая Kafka.
 
 Правила модели:
 
@@ -312,8 +312,8 @@ Kafka используется только там, где требуется а
 
 | Topic                      | Направление               | Содержание                                    |
 | -------------------------- | ------------------------- | --------------------------------------------- |
-| `e3.execution.commands.v1` | Orchestrator → Controller | `SubmitExecution`, `ReconcileExecution`, `CancelExecution` |
-| `e3.execution.events.v1`   | Controller → Orchestrator | `Started`, `Succeeded`, `Failed`, `Lost`, `Cancelled`      |
+| `n3.execution.commands.v1` | Orchestrator → Controller | `SubmitExecution`, `ReconcileExecution`, `CancelExecution` |
+| `n3.execution.events.v1`   | Controller → Orchestrator | `Started`, `Succeeded`, `Failed`, `Lost`, `Cancelled`      |
 
 Каждое сообщение имеет envelope:
 
@@ -330,7 +330,7 @@ Kafka используется только там, где требуется а
   "payload": {
     "node_run_id": "uuid",
     "attempt_id": "uuid",
-    "outputs": {"data": "s3://e3-lake/staging/executions/{attempt_id}/data/manifest.json"},
+    "outputs": {"data": "s3://n3-lake/staging/executions/{attempt_id}/data/manifest.json"},
     "metrics": {}
   }
 }
@@ -350,8 +350,8 @@ Kafka используется только там, где требуется а
 - Retry решает только Orchestrator: 3 ретрая, максимум 4 попытки на NodeRun. Controller сам не перезапускает.
 - У NodeRun не более одной активной попытки. Новая стартует только после того, как старая доказуемо мертва: `SparkApplication` терминален или удалён, нет pod'ов с её `attempt_id`, Kubernetes не может её восстановить. Итог попытки (`Succeeded`, `Failed`, `Lost`, `Cancelled`) Controller шлёт только после этой проверки. См. ADR-0003.
 - Первый принятый итог попытки окончателен: следующие события той же попытки ничего не меняют.
-- Попытку, о которой нет событий дольше `E3_RECONCILE_AFTER_SECONDS` (600 с), Orchestrator проверяет командой `ReconcileExecution` и повторяет её по тому же таймауту, пока попытка не терминальна; неотправленных проверок на попытку не больше одной. Controller заново шлёт итог терминальной попытки, а пропавший `SparkApplication` заменяет Attempt Fence и шлёт `ExecutionLost`, только когда pod'ов попытки не осталось. Ответа «жива» нет: молчание — не смерть.
-- `CancelExecution` получают попытки узлов, которые останавливает отмена или Fail-fast. Controller удаляет живой `SparkApplication` и ставит на его имя Attempt Fence с меткой `e3.io/cancelled=true`; терминальный `SparkApplication` не трогает и шлёт его обычный итог. `ExecutionCancelled` уходит, только когда pod'ов попытки не осталось. Пока узел в `CANCELLING`, Orchestrator по таймауту `E3_RECONCILE_AFTER_SECONDS` повторяет `CancelExecution` вместо `ReconcileExecution`. Отменяемая попытка не ретраится; `ExecutionLost` по ней тоже значит `CANCELLED`.
+- Попытку, о которой нет событий дольше `N3_RECONCILE_AFTER_SECONDS` (600 с), Orchestrator проверяет командой `ReconcileExecution` и повторяет её по тому же таймауту, пока попытка не терминальна; неотправленных проверок на попытку не больше одной. Controller заново шлёт итог терминальной попытки, а пропавший `SparkApplication` заменяет Attempt Fence и шлёт `ExecutionLost`, только когда pod'ов попытки не осталось. Ответа «жива» нет: молчание — не смерть.
+- `CancelExecution` получают попытки узлов, которые останавливает отмена или Fail-fast. Controller удаляет живой `SparkApplication` и ставит на его имя Attempt Fence с меткой `n3.io/cancelled=true`; терминальный `SparkApplication` не трогает и шлёт его обычный итог. `ExecutionCancelled` уходит, только когда pod'ов попытки не осталось. Пока узел в `CANCELLING`, Orchestrator по таймауту `N3_RECONCILE_AFTER_SECONDS` повторяет `CancelExecution` вместо `ReconcileExecution`. Отменяемая попытка не ретраится; `ExecutionLost` по ней тоже значит `CANCELLED`.
 - Attempt Fence — `SparkApplication` с именем попытки и `spec.suspend: true`: Spark Operator его не запускает, а опоздавшая `SubmitExecution` упирается в занятое имя.
 - Transactional outbox исключает разрыв между записью состояния в PostgreSQL и публикацией команды.
 - Inbox/deduplication защищает от повторной обработки.
@@ -379,7 +379,7 @@ Kafka используется только там, где требуется а
 
 ```
 
-s3://e3-lake/
+s3://n3-lake/
   staging/
     uploads/{upload_id}/
     executions/{attempt_id}/
@@ -412,7 +412,7 @@ s3://e3-lake/
 
 ## 9. Безопасность и изоляция
 
-Для self-hosted E3 это обязательная часть архитектуры, а не последующая доработка.
+Для self-hosted N3 это обязательная часть архитектуры, а не последующая доработка.
 
 - OIDC для аутентификации, проектные роли и проверки доступа на каждом API.
 - Изолированные workload-процессы/контейнеры для пользовательского DS-кода.
@@ -420,7 +420,7 @@ s3://e3-lake/
 - Запрет доступа вычислительных задач к PostgreSQL Control Plane.
 - Resource quotas для CPU, RAM и параллельных запусков.
 - Audit log для доступа к датасетам и запуска вычислений.
-- Отдельная политика доступа к Trino/Superset, чтобы аналитический слой не обходил права E3.
+- Отдельная политика доступа к Trino/Superset, чтобы аналитический слой не обходил права N3.
 
 ## 10. Что реально войдёт в MVP
 

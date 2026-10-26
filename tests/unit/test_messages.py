@@ -4,8 +4,8 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from e3.shared.contracts import ExecutionContext, ExecutionResult
-from e3.shared.messages import (
+from n3.shared.contracts import ExecutionContext, ExecutionResult
+from n3.shared.messages import (
     ExecutionCancelled,
     ExecutionFailed,
     ExecutionLost,
@@ -23,7 +23,7 @@ from e3.shared.messages import (
     reconcile,
     started,
 )
-from e3.shared.schemas import json_schemas
+from n3.shared.schemas import json_schemas
 
 
 def succeeded() -> ExecutionSucceeded:
@@ -35,7 +35,7 @@ def succeeded() -> ExecutionSucceeded:
         payload=ExecutionResult(
             node_run_id=node_run_id,
             attempt_id=attempt_id,
-            outputs={"data": "s3://e3-lake/staging/executions/a/manifest.json"},
+            outputs={"data": "s3://n3-lake/staging/executions/a/manifest.json"},
         ),
     )
 
@@ -88,13 +88,13 @@ def command() -> SubmitExecution:
         attempt_id=attempt_id,
         trace_id="trace-1",
         payload=Submission(
-            executable_ref="registry.local/e3/read@sha256:" + "a" * 64,
+            executable_ref="registry.local/n3/read@sha256:" + "a" * 64,
             context=ExecutionContext(
                 node_run_id=node_run_id,
                 attempt_id=attempt_id,
                 inputs={},
                 parameters={},
-                output_prefix=f"s3://e3-lake/staging/executions/{attempt_id}",
+                output_prefix=f"s3://n3-lake/staging/executions/{attempt_id}",
             ),
         ),
     )

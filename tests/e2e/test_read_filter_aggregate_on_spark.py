@@ -2,7 +2,7 @@
 
 Запускает `scripts/e2e.sh`: он поднимает kind, Spark Operator, Control Plane и
 Execution Controller, регистрирует блоки `read`, `filter` и `aggregate` и
-передаёт адрес API в `E3_E2E_API_URL`. Без этой переменной тесты пропускаются.
+передаёт адрес API в `N3_E2E_API_URL`. Без этой переменной тесты пропускаются.
 """
 
 import asyncio
@@ -20,19 +20,19 @@ import pytest
 from kubernetes_asyncio import config as kube_config
 from kubernetes_asyncio.client import ApiClient, CoreV1Api, CustomObjectsApi
 
-from e3.execution.controller import ExecutionController
-from e3.execution.kubernetes import KubernetesSparkApplications
-from e3.execution.settings import ExecutionSettings
-from e3.execution.workload import ATTEMPT_LABEL, COMMAND_ANNOTATION, GROUP, PLURAL, VERSION
-from e3.settings import Settings
-from e3.shared.contracts import ExecutionContext, ExecutionResult
-from e3.shared.manifest import Manifest
-from e3.shared.messages import ExecutionEvent, parse_command
+from n3.execution.controller import ExecutionController
+from n3.execution.kubernetes import KubernetesSparkApplications
+from n3.execution.settings import ExecutionSettings
+from n3.execution.workload import ATTEMPT_LABEL, COMMAND_ANNOTATION, GROUP, PLURAL, VERSION
+from n3.settings import Settings
+from n3.shared.contracts import ExecutionContext, ExecutionResult
+from n3.shared.manifest import Manifest
+from n3.shared.messages import ExecutionEvent, parse_command
 from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_filter_aggregate_graph
 
-API_URL = os.environ.get("E3_E2E_API_URL")
+API_URL = os.environ.get("N3_E2E_API_URL")
 
 pytestmark = pytest.mark.skipif(API_URL is None, reason="E2E запускает scripts/e2e.sh")
 
