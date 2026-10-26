@@ -160,7 +160,10 @@ def s3_admin(settings: Settings) -> S3Client:
 
 @pytest.fixture
 def settings(base_settings: Settings) -> Settings:
-    return base_settings
+    """Свой dev-Project на тест: активные PipelineRun соседей не занимают его лимит."""
+    return base_settings.model_copy(
+        update={"dev_organization_id": uuid4(), "dev_project_id": uuid4()}
+    )
 
 
 def client_for(settings: Settings, storage: ObjectStorage | None = None) -> httpx.AsyncClient:

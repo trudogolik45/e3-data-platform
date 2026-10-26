@@ -4,7 +4,8 @@
 
 - `start` создаёт PipelineRun и его NodeRun в PENDING;
 - `dispatch_pending` запускает готовые узлы PENDING-запусков: BLOCK — командой
-  SubmitExecution через outbox, Publish Dataset — переводом в RUNNING;
+  SubmitExecution через outbox, Publish Dataset — переводом в RUNNING; у Project
+  не больше `ACTIVE_RUNS_LIMIT` активных запусков, остальные ждут по FIFO;
 - `cancel` запрашивает отмену: работающие попытки получают CancelExecution, итог
   CANCELLED фиксируется только по доказанной остановке (так же гасит узлы Fail-fast);
 - `handle_event` применяет событие Execution Plane к Current Attempt; провал
@@ -85,6 +86,9 @@ from e3.shared.storage import ObjectStorage, StorageUnavailable
 log = logging.getLogger(__name__)
 
 DISPATCH_BATCH = 10
+# Активный PipelineRun держит узлы и ресурсы; у Project их не больше лимита (PRD §5).
+ACTIVE_RUNS = frozenset({RunState.RUNNING, RunState.CANCELLING})
+ACTIVE_RUNS_LIMIT = 5
 # NodeRun, ждущий итога Current Attempt от Execution Plane.
 AWAITING_OUTCOME = frozenset({NodeState.QUEUED, NodeState.RUNNING})
 # NodeRun, у которого Current Attempt ещё может прислать итог.
@@ -255,15 +259,56 @@ class RunOrchestrator:
         ]
 
     async def dispatch_pending(self) -> int:
-        """Переводит PENDING-запуски в RUNNING и запускает их готовые узлы."""
+        """Переводит PENDING-запуски в RUNNING по FIFO, не больше лимита на Project."""
+        started = 0
+        for project_id in await self._projects_with_room():
+            started += await self._dispatch_project(project_id)
+        return started
+
+    async def _projects_with_room(self) -> Sequence[UUID]:
+        """Project с ждущими запусками и свободным местом, по самому давнему ждущему.
+
+        Заполненный Project сюда не попадает и не забивает пачку остальным.
+        """
+        pending = PipelineRunRow.state == RunState.PENDING
+        active = PipelineRunRow.state.in_(ACTIVE_RUNS)
         async with self._sessions.begin() as session:
+            projects = await session.scalars(
+                select(PipelineRunRow.project_id)
+                .where(PipelineRunRow.state.in_(ACTIVE_RUNS | {RunState.PENDING}))
+                .group_by(PipelineRunRow.project_id)
+                .having(
+                    func.count().filter(pending) > 0,
+                    func.count().filter(active) < ACTIVE_RUNS_LIMIT,
+                )
+                .order_by(func.min(PipelineRunRow.created_at).filter(pending))
+                .limit(DISPATCH_BATCH)
+            )
+            return projects.all()
+
+    async def _dispatch_project(self, project_id: UUID) -> int:
+        """Пересчёт активных и старт — под замком Project: параллельный проход ждёт."""
+        async with self._sessions.begin() as session:
+            await session.execute(select(func.pg_advisory_xact_lock(_lock_key(project_id))))
+            active = await session.scalar(
+                select(func.count()).where(
+                    PipelineRunRow.project_id == project_id,
+                    PipelineRunRow.state.in_(ACTIVE_RUNS),
+                )
+            )
+            room = ACTIVE_RUNS_LIMIT - (active or 0)
+            if room <= 0:
+                return 0
             runs = (
                 await session.scalars(
                     select(PipelineRunRow)
-                    .where(PipelineRunRow.state == RunState.PENDING)
-                    .order_by(PipelineRunRow.created_at)
-                    .limit(DISPATCH_BATCH)
-                    .with_for_update(skip_locked=True)
+                    .where(
+                        PipelineRunRow.project_id == project_id,
+                        PipelineRunRow.state == RunState.PENDING,
+                    )
+                    .order_by(PipelineRunRow.created_at, PipelineRunRow.id)
+                    .limit(room)
+                    .with_for_update()
                 )
             ).all()
             for run in runs:
@@ -644,6 +689,11 @@ async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUI
         log.exception("NodeRun %s не продвинулся, повторится", node_run_id)
         return False
     return True
+
+
+def _lock_key(project_id: UUID) -> int:
+    """Ключ advisory lock Project: совпадение у разных Project лишь сериализует их."""
+    return int.from_bytes(project_id.bytes[:8], signed=True)
 
 
 def _cancelling(node_state: NodeState) -> bool:
