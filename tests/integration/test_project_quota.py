@@ -101,7 +101,8 @@ async def test_cancelled_attempt_holds_room_until_proven_stopped(plant: Plant) -
 
 
 async def test_full_quota_does_not_delay_other_project(plant: Plant) -> None:
-    [await plant.start() for _ in range(3)]
+    for _ in range(3):
+        await plant.start()
     await drain(plant.orchestrator.dispatch_pending)
     other = own_project(plant.settings)
     async with client_for(other) as client:
@@ -117,7 +118,8 @@ async def test_full_quota_does_not_delay_other_project(plant: Plant) -> None:
 async def test_node_without_room_is_logged_with_usage_and_ceilings(
     plant: Plant, caplog: pytest.LogCaptureFixture
 ) -> None:
-    [await plant.start() for _ in range(3)]
+    for _ in range(3):
+        await plant.start()
 
     with caplog.at_level(logging.INFO, logger="e3.runs.orchestrator"):
         await drain(plant.orchestrator.dispatch_pending)

@@ -273,7 +273,7 @@ class RunOrchestrator:
         """Стартует ждущие запуски и попытки; возвращает их общее число."""
         started = 0
         for project_id in await self._projects_to_dispatch():
-            started += await self._dispatch_project(project_id)
+            started += await self._dispatch_isolated(project_id)
         return started
 
     async def _projects_to_dispatch(self) -> list[UUID]:
@@ -359,12 +359,16 @@ class RunOrchestrator:
             ceiling.memory_mib,
         )
 
-    async def _wake(self, project_id: UUID) -> None:
-        """Быстрый путь после итога: сбой не страшен, место раздаст `dispatch_pending`."""
+    async def _dispatch_isolated(self, project_id: UUID) -> int:
+        """Сбой одного Project не роняет проход и не держит остальные: повторится позже.
+
+        Так же зовётся быстрый путь после итога: при сбое место раздаст `dispatch_pending`.
+        """
         try:
-            await self._dispatch_project(project_id)
+            return await self._dispatch_project(project_id)
         except Exception:
-            log.warning("Project %s подождёт dispatch_pending", project_id, exc_info=True)
+            log.exception("Project %s не продвинулся, повторится", project_id)
+            return 0
 
     async def cancel(self, pipeline_run_id: UUID) -> PipelineRun:
         """Запрашивает отмену; повтор и отмена во время Fail-fast ничего не меняют."""
@@ -397,7 +401,7 @@ class RunOrchestrator:
             await self._apply(session, run, node, attempt, event)
             ended = attempt.state not in LIVE
         if ended:
-            await self._wake(run.project_id)
+            await self._dispatch_isolated(run.project_id)
 
     async def finalize_pending(self) -> int:
         """Возвращает число NodeRun, по которым проход продвинулся."""
@@ -716,7 +720,7 @@ class RunOrchestrator:
                 return
             await change(session, node)
             await self._advance(session, run)
-        await self._wake(run.project_id)
+        await self._dispatch_isolated(run.project_id)
 
     async def _node_ids(self, kind: NodeKind, state: NodeState) -> list[UUID]:
         async with self._sessions() as session:
