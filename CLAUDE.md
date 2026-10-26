@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Задачи живут в GitHub Issues (`trudogolik45/e3-data-platform`), через `gh`. См. `docs/agents/issue-tracker.md`.
+Задачи живут в GitHub Issues (`trudogolik45/n3-data-platform`), через `gh`. См. `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
