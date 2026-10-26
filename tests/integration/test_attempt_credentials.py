@@ -29,7 +29,8 @@ pytestmark = pytest.mark.integration
 CONTROLLER_USER = "e3-execution-controller"
 CONTROLLER_SECRET = "e3-execution-controller-secret"
 CONTROLLER_POLICY = Path(__file__).parents[2] / "scripts/minio/execution-controller-policy.json"
-TWELVE_HOURS = 43200
+# Не значение по умолчанию: тест видит, что настройка доходит до STS.
+LIFETIME_SECONDS = 3600
 CLOCK_SKEW = timedelta(seconds=5)
 
 
@@ -54,7 +55,7 @@ def credentials(controller_user: None, base_settings: Settings) -> StsCredential
         aws_secret_access_key=CONTROLLER_SECRET,
         region_name=base_settings.s3_region,
     )
-    return StsCredentials(sts, duration_seconds=TWELVE_HOURS)
+    return StsCredentials(sts, duration_seconds=LIFETIME_SECONDS)
 
 
 @dataclass(frozen=True)
@@ -184,5 +185,5 @@ async def test_attempt_keys_live_as_long_as_configured(
 
     keys = await credentials.issue(lake.context)
 
-    lifetime = timedelta(seconds=TWELVE_HOURS)
+    lifetime = timedelta(seconds=LIFETIME_SECONDS)
     assert before + lifetime - CLOCK_SKEW <= keys.expires_at <= datetime.now(UTC) + lifetime

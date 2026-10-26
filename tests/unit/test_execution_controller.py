@@ -149,6 +149,17 @@ async def test_submit_redelivered_after_sts_failure_still_gives_attempt_its_keys
     assert [s["stringData"] for s in applications.secrets.values()] == [ATTEMPT_KEYS.env()]
 
 
+async def test_redelivered_submit_issues_no_extra_attempt_keys() -> None:
+    credentials = FixedCredentials()
+    execution, _, _, _ = controller(credentials)
+    submit = command()
+
+    await execution.submit(submit)
+    await execution.submit(submit)
+
+    assert credentials.issued == [submit.payload.context]
+
+
 async def test_attempt_fence_gets_no_attempt_keys() -> None:
     credentials = FixedCredentials()
     execution, applications, _, _ = controller(credentials)

@@ -20,6 +20,8 @@ if TYPE_CHECKING:
 # MinIO не смотрит на роль, но boto3 требует ARN; значение из документации MinIO.
 ROLE_ARN = "arn:xxx:xxx:xxx:xxxx"
 
+# Те же действия разрешены пользователю контроллера в
+# `scripts/minio/execution-controller-policy.json`: права сессии — пересечение.
 WRITE_ACTIONS = [
     "s3:PutObject",
     "s3:DeleteObject",
@@ -70,16 +72,15 @@ class StsCredentials:
 
 def session_policy(context: ExecutionContext) -> dict[str, Any]:
     """Inline session policy `AssumeRole`: права сессии — пересечение с правами её пользователя."""
-    bucket, output = _split(context.output_prefix)
-    inputs = sorted({_split(i.manifest_uri.rpartition("/")[0])[1] for i in context.inputs.values()})
+    output = _split(context.output_prefix)
+    inputs = sorted({_split(i.manifest_uri.rpartition("/")[0]) for i in context.inputs.values()})
     readable = [*inputs, output]
     return {
         "Version": "2012-10-17",
         "Statement": [
-            _allow(["s3:GetObject"], _objects(bucket, readable)),
-            _allow(WRITE_ACTIONS, _objects(bucket, [output])),
-            _allow(["s3:ListBucket"], [f"arn:aws:s3:::{bucket}"])
-            | {"Condition": {"StringLike": {"s3:prefix": _subtree(readable)}}},
+            _allow(["s3:GetObject"], _objects(readable)),
+            _allow(WRITE_ACTIONS, _objects([output])),
+            *(_list(bucket, readable) for bucket in sorted({bucket for bucket, _ in readable})),
         ],
     }
 
@@ -88,8 +89,16 @@ def _allow(actions: list[str], resources: list[str]) -> dict[str, Any]:
     return {"Effect": "Allow", "Action": actions, "Resource": resources}
 
 
-def _objects(bucket: str, prefixes: list[str]) -> list[str]:
-    return [f"arn:aws:s3:::{bucket}/{key}" for key in _subtree(prefixes)]
+def _list(bucket: str, prefixes: list[tuple[str, str]]) -> dict[str, Any]:
+    keys = [key for own, key in prefixes if own == bucket]
+    condition = {"StringLike": {"s3:prefix": _subtree(keys)}}
+    return _allow(["s3:ListBucket"], [f"arn:aws:s3:::{bucket}"]) | {"Condition": condition}
+
+
+def _objects(prefixes: list[tuple[str, str]]) -> list[str]:
+    return [
+        f"arn:aws:s3:::{bucket}/{key}" for bucket, prefix in prefixes for key in _subtree([prefix])
+    ]
 
 
 def _subtree(prefixes: list[str]) -> list[str]:

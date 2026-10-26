@@ -48,6 +48,15 @@ class KubernetesSparkApplications:
             return None
         return found
 
+    async def has_secret(self, name: str) -> bool:
+        try:
+            await self._core.read_namespaced_secret(name, self._namespace)
+        except ApiException as error:
+            if error.status != NOT_FOUND:
+                raise
+            return False
+        return True
+
     async def create_secret(self, manifest: dict[str, Any]) -> None:
         try:
             # Клиент принимает и dict, как тело custom object; заглушки ждут V1Secret.

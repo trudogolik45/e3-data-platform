@@ -31,6 +31,9 @@ class InMemorySparkApplications:
         manifest["metadata"]["uid"] = str(uuid4())
         self.items[manifest["metadata"]["name"]] = manifest
 
+    async def has_secret(self, name: str) -> bool:
+        return name in self.secrets
+
     async def create_secret(self, manifest: dict[str, Any]) -> None:
         self.secrets.setdefault(manifest["metadata"]["name"], manifest)
 

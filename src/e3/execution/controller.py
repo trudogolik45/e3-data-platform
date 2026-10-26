@@ -23,6 +23,7 @@ from e3.execution.workload import (
     WorkloadConfig,
     attempt_fence,
     credentials_secret,
+    credentials_secret_name,
     is_cancelled,
     is_fence,
     spark_application,
@@ -80,6 +81,8 @@ class SparkApplications(Protocol):
         """Pod'ы driver и executor с меткой попытки."""
         ...
 
+    async def has_secret(self, name: str) -> bool: ...
+
     async def create_secret(self, manifest: dict[str, Any]) -> None:
         """Создаёт Secret; с таким именем уже есть — no-op."""
         ...
@@ -126,13 +129,18 @@ class ExecutionController:
                 await self.cancel(command)
 
     async def submit(self, command: SubmitExecution) -> None:
-        """Повтор команды дозаводит Secret, если прошлая обработка упала до него."""
+        """Повтор команды дозаводит Secret, если прошлая обработка упала до него.
+
+        Есть Secret — новых ключей не выдаём: лишнюю STS-сессию не отозвать.
+        """
         await self._applications.create(spark_application(command, self._config))
         application = await self._applications.get(workload_name(command.attempt_id))
         if application is None:
             return
         if is_fence(application):
             log.warning("попытка %s огорожена Attempt Fence, Spark не запущен", command.attempt_id)
+            return
+        if await self._applications.has_secret(credentials_secret_name(command.attempt_id)):
             return
         keys = await self._credentials.issue(command.payload.context)
         await self._applications.create_secret(credentials_secret(application, keys))
