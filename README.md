@@ -1,7 +1,7 @@
 # N3 Data Platform
 
-[![CI](https://github.com/trudogolik45/e3-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/trudogolik45/e3-data-platform/actions/workflows/ci.yml)
-[![E2E](https://github.com/trudogolik45/e3-data-platform/actions/workflows/e2e.yml/badge.svg)](https://github.com/trudogolik45/e3-data-platform/actions/workflows/e2e.yml)
+[![CI](https://github.com/trudogolik45/n3-data-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/trudogolik45/n3-data-platform/actions/workflows/ci.yml)
+[![E2E](https://github.com/trudogolik45/n3-data-platform/actions/workflows/e2e.yml/badge.svg)](https://github.com/trudogolik45/n3-data-platform/actions/workflows/e2e.yml)
 
 Платформа обработки данных: пользователь загружает датасет, собирает из готовых блоков граф обработки (DAG), запускает его на Spark и получает новую версию датасета в Data Lake.
 
@@ -47,7 +47,7 @@ flowchart LR
 - Ретраи с гарантией одной активной попытки на узел и восстановление после потери задания.
 - CI на каждый PR и e2e-прогон на kind на каждый push в `main`.
 
-Дальше по плану: отмена запусков, доступ по ролям (OIDC), лимиты, изоляция workload'ов, сквозная трассировка, затем Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/e3-data-platform/issues).
+Дальше по плану: отмена запусков, доступ по ролям (OIDC), лимиты, изоляция workload'ов, сквозная трассировка, затем Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).
 
 ## Стек
 
