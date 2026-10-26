@@ -1,4 +1,4 @@
-"""SparkApplications (CRD Kubeflow Spark Operator) и pod'ы попыток в Kubernetes API."""
+"""SparkApplications (CRD Kubeflow Spark Operator), pod'ы и Secret'ы попыток в Kubernetes API."""
 
 from typing import Any
 from uuid import UUID
@@ -47,6 +47,17 @@ class KubernetesSparkApplications:
                 raise
             return None
         return found
+
+    async def create_secret(self, manifest: dict[str, Any]) -> None:
+        try:
+            # Клиент принимает и dict, как тело custom object; заглушки ждут V1Secret.
+            await self._core.create_namespaced_secret(
+                self._namespace,
+                manifest,  # pyright: ignore[reportArgumentType]
+            )
+        except ApiException as error:
+            if error.status != ALREADY_EXISTS:
+                raise
 
     async def delete(self, name: str) -> None:
         try:

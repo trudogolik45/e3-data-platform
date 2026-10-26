@@ -3,8 +3,10 @@
 Spark Operator запускает `main.py '<ExecutionContext JSON>'`. Блок читает вход
 `source` по его manifest, преобразует DataFrame и пишет только под
 `output_prefix`: данные и manifest выхода, затем свой ExecutionResult в
-`result.json` — его забирает Execution Controller. Ключи S3 — из окружения
-(`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`), адрес — `E3_S3_ENDPOINT_URL`.
+`result.json` — его забирает Execution Controller. Ключи S3 — Attempt Credentials
+из окружения (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`):
+читают только входы попытки и пишут только под её `output_prefix`. Адрес —
+`E3_S3_ENDPOINT_URL`.
 
 Spark работает в ANSI-режиме: неверное приведение типа и переполнение роняют
 блок, а не превращаются молча в `null`.

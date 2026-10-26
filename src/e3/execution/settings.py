@@ -18,11 +18,13 @@ class ExecutionSettings(BaseSettings):
     spark_namespace: str = "default"
     spark_service_account: str = "spark-operator-spark"
     spark_version: str = "3.5.9"
-    # S3 глазами workload'а в кластере и Secret с его ключами.
+    # S3 глазами workload'а в кластере.
     spark_s3_endpoint_url: str = "http://minio:9000"
-    spark_s3_secret: str = "e3-s3"
+    # Срок жизни Attempt Credentials, без продления (ADR-0006); границы — у MinIO STS.
+    attempt_credentials_seconds: int = Field(default=12 * 3600, ge=900, le=365 * 24 * 3600)
 
-    # S3 глазами самого контроллера: читает ExecutionResult блока.
+    # S3 и STS глазами самого контроллера: читает ExecutionResult блока и выдаёт
+    # Attempt Credentials. Ключи — его собственного пользователя MinIO, не root.
     s3_endpoint_url: str = "http://localhost:9000"
     # Без значений по умолчанию: забытые ключи не должны подменяться общеизвестными.
     s3_access_key: SecretStr
@@ -36,5 +38,4 @@ class ExecutionSettings(BaseSettings):
             service_account=self.spark_service_account,
             spark_version=self.spark_version,
             s3_endpoint_url=self.spark_s3_endpoint_url,
-            s3_secret=self.spark_s3_secret,
         )

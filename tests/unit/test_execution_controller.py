@@ -9,6 +9,8 @@ from e3.execution.workload import (
     CANCELLED_LABEL,
     COMMAND_ANNOTATION,
     FENCED_LABEL,
+    GROUP,
+    VERSION,
     Pod,
     WorkloadConfig,
     spark_application,
@@ -25,6 +27,7 @@ from e3.shared.messages import (
     parse_command,
     reconcile,
 )
+from tests.fakes.attempt_credentials import ATTEMPT_KEYS, FixedCredentials, StsUnavailable
 from tests.fakes.spark_applications import InMemorySparkApplications
 from tests.unit.conftest import UNIT_S3_SECRET
 
@@ -34,7 +37,6 @@ CONFIG = WorkloadConfig(
     service_account="spark-operator-spark",
     spark_version="3.5.9",
     s3_endpoint_url="http://minio:9000",
-    s3_secret="e3-s3",
 )
 
 
@@ -71,11 +73,14 @@ def command(pod: PodSize | None = None) -> SubmitExecution:
     )
 
 
-def controller() -> tuple[
-    ExecutionController, InMemorySparkApplications, RecordedEvents, StoredResults
-]:
+def controller(
+    credentials: FixedCredentials | None = None,
+) -> tuple[ExecutionController, InMemorySparkApplications, RecordedEvents, StoredResults]:
     applications, events, results = InMemorySparkApplications(), RecordedEvents(), StoredResults()
-    return ExecutionController(applications, events, results, CONFIG), applications, events, results
+    execution = ExecutionController(
+        applications, events, results, credentials or FixedCredentials(), CONFIG
+    )
+    return execution, applications, events, results
 
 
 async def test_redelivered_submit_execution_creates_single_spark_application() -> None:
@@ -98,6 +103,63 @@ async def test_spark_application_runs_block_image_once_with_execution_context() 
     assert spec["image"] == IMAGE
     assert spec["restartPolicy"] == {"type": "Never"}
     assert ExecutionContext.model_validate_json(spec["arguments"][0]) == submit.payload.context
+
+
+async def test_attempt_keys_reach_spark_pods_through_secret_owned_by_its_application() -> None:
+    credentials = FixedCredentials()
+    execution, applications, _, _ = controller(credentials)
+    submit = command()
+
+    await execution.submit(submit)
+
+    application = applications.items[name(submit)]
+    [secret] = applications.secrets.values()
+    assert credentials.issued == [submit.payload.context]
+    assert secret["stringData"] == {
+        "AWS_ACCESS_KEY_ID": "attempt-access",
+        "AWS_SECRET_ACCESS_KEY": "attempt-secret",
+        "AWS_SESSION_TOKEN": "attempt-token",
+    }
+    assert secret["metadata"]["ownerReferences"] == [
+        {
+            "apiVersion": f"{GROUP}/{VERSION}",
+            "kind": "SparkApplication",
+            "name": name(submit),
+            "uid": application["metadata"]["uid"],
+            "controller": True,
+            "blockOwnerDeletion": True,
+        }
+    ]
+    secret_ref = [{"secretRef": {"name": secret["metadata"]["name"]}}]
+    assert application["spec"]["driver"]["envFrom"] == secret_ref
+    assert application["spec"]["executor"]["envFrom"] == secret_ref
+
+
+async def test_submit_redelivered_after_sts_failure_still_gives_attempt_its_keys() -> None:
+    credentials = FixedCredentials()
+    execution, applications, _, _ = controller(credentials)
+    submit = command()
+    credentials.fail_once()
+    with pytest.raises(StsUnavailable):
+        await execution.submit(submit)
+
+    await execution.submit(submit)
+
+    assert list(applications.items) == [name(submit)]
+    assert [s["stringData"] for s in applications.secrets.values()] == [ATTEMPT_KEYS.env()]
+
+
+async def test_attempt_fence_gets_no_attempt_keys() -> None:
+    credentials = FixedCredentials()
+    execution, applications, _, _ = controller(credentials)
+    submit = command()
+    await execution.handle(reconcile(submit, 1))
+
+    await execution.handle(submit)
+
+    assert applications.items[name(submit)]["spec"]["suspend"] is True
+    assert applications.secrets == {}
+    assert credentials.issued == []
 
 
 async def test_running_application_is_reported_started_once() -> None:
@@ -310,7 +372,7 @@ async def test_fenced_attempt_is_reported_lost_only_after_its_pods_are_gone() ->
     assert events.sent == []
 
     applications.set_pods(submit.attempt_id)
-    restarted = ExecutionController(applications, events, results, CONFIG)
+    restarted = ExecutionController(applications, events, results, FixedCredentials(), CONFIG)
     await restarted.report()
     await restarted.report()
 

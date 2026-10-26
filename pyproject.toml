@@ -28,8 +28,9 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
-    "boto3-stubs[s3]>=1.43.118",
+    "boto3-stubs[s3,sts]>=1.43.118",
     "import-linter>=2.15",
+    "minio>=7.2.20",
     "pyarrow>=26.0.0",
     "pyright>=1.1.414",
     "pytest>=9.1.1",

@@ -18,6 +18,7 @@ from kubernetes_asyncio.client import ApiClient, CoreV1Api, CustomObjectsApi
 
 from e3.execution.controller import ExecutionController
 from e3.execution.kubernetes import KubernetesSparkApplications
+from e3.execution.main import attempt_credentials
 from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import (
     COMMAND_ANNOTATION,
@@ -37,6 +38,7 @@ from e3.shared.messages import (
     parse_command,
     reconcile,
 )
+from tests.e2e.cluster import attempt_secret
 from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_graph
@@ -70,7 +72,13 @@ async def cluster() -> AsyncIterator[tuple[KubernetesSparkApplications, Executio
         applications = KubernetesSparkApplications(
             CustomObjectsApi(api), CoreV1Api(api), settings.spark_namespace
         )
-        controller = ExecutionController(applications, _Unused(), _Unused(), settings.workload())
+        controller = ExecutionController(
+            applications,
+            _Unused(),
+            _Unused(),
+            attempt_credentials(settings),
+            settings.workload(),
+        )
         yield applications, controller
     finally:
         await api.close()
@@ -131,7 +139,9 @@ async def test_vanished_attempt_is_fenced_then_retried_to_success(
         first = await eventually(lambda: _read(api, run_id), lambda n: n["state"] == "RUNNING")
         first_id = UUID(first["attempt_id"])
 
+        assert await attempt_secret(first_id) is not None
         await _delete(workload_name(first_id))
+        await eventually(lambda: attempt_secret(first_id), lambda s: s is None)
         node = await eventually(lambda: _read(api, run_id), lambda n: len(n["attempts"]) == 2)
 
         fence = await applications.get(workload_name(first_id))
@@ -144,6 +154,7 @@ async def test_vanished_attempt_is_fenced_then_retried_to_success(
         await controller.handle(_original(fence))
         await asyncio.sleep(SUSPEND_WATCH_SECONDS)
         assert await applications.pods(first_id) == []
+        assert await attempt_secret(first_id) is None
 
         run = await eventually(
             lambda: api.run(run_id), lambda r: r["state"] in {"SUCCEEDED", "FAILED"}
