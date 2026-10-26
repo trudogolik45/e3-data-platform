@@ -161,9 +161,12 @@ def s3_admin(settings: Settings) -> S3Client:
 @pytest.fixture
 def settings(base_settings: Settings) -> Settings:
     """Свой dev-Project на тест: активные PipelineRun соседей не занимают его лимит."""
-    return base_settings.model_copy(
-        update={"dev_organization_id": uuid4(), "dev_project_id": uuid4()}
-    )
+    return own_project(base_settings)
+
+
+def own_project(settings: Settings) -> Settings:
+    """Те же настройки с новыми dev-Organization и dev-Project."""
+    return settings.model_copy(update={"dev_organization_id": uuid4(), "dev_project_id": uuid4()})
 
 
 def client_for(settings: Settings, storage: ObjectStorage | None = None) -> httpx.AsyncClient:

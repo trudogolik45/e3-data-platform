@@ -85,6 +85,7 @@ from e3.shared.storage import ObjectStorage, StorageUnavailable
 
 log = logging.getLogger(__name__)
 
+# Project за проход `dispatch_pending`; каждый стартует до `ACTIVE_RUNS_LIMIT` запусков.
 DISPATCH_BATCH = 10
 # Активный PipelineRun держит узлы и ресурсы; у Project их не больше лимита (PRD §5).
 ACTIVE_RUNS = frozenset({RunState.RUNNING, RunState.CANCELLING})
@@ -268,7 +269,8 @@ class RunOrchestrator:
     async def _projects_with_room(self) -> Sequence[UUID]:
         """Project с ждущими запусками и свободным местом, по самому давнему ждущему.
 
-        Заполненный Project сюда не попадает и не забивает пачку остальным.
+        Заполненный Project сюда не попадает и не забивает пачку остальным. Это
+        подсказка без замка: лимит решает пересчёт в `_dispatch_project`.
         """
         pending = PipelineRunRow.state == RunState.PENDING
         active = PipelineRunRow.state.in_(ACTIVE_RUNS)
@@ -289,7 +291,7 @@ class RunOrchestrator:
     async def _dispatch_project(self, project_id: UUID) -> int:
         """Пересчёт активных и старт — под замком Project: параллельный проход ждёт."""
         async with self._sessions.begin() as session:
-            await session.execute(select(func.pg_advisory_xact_lock(_lock_key(project_id))))
+            await session.execute(select(func.pg_advisory_xact_lock(_project_lock_key(project_id))))
             active = await session.scalar(
                 select(func.count()).where(
                     PipelineRunRow.project_id == project_id,
@@ -691,7 +693,7 @@ async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUI
     return True
 
 
-def _lock_key(project_id: UUID) -> int:
+def _project_lock_key(project_id: UUID) -> int:
     """Ключ advisory lock Project: совпадение у разных Project лишь сериализует их."""
     return int.from_bytes(project_id.bytes[:8], signed=True)
 
