@@ -7,6 +7,7 @@
 значит, что попытку остановили по `CancelExecution`, а не потеряли.
 """
 
+import math
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -14,6 +15,7 @@ from uuid import UUID
 
 from e3.shared.messages import (
     CancelExecution,
+    PodSize,
     ReconcileExecution,
     SubmitExecution,
     original_submission,
@@ -58,10 +60,6 @@ class WorkloadConfig:
     s3_endpoint_url: str
     # Secret с AWS_ACCESS_KEY_ID и AWS_SECRET_ACCESS_KEY для driver и executor.
     s3_secret: str
-    memory: str = "512m"
-    # Доля CPU, которую запрашивают driver и executor (`coreRequest`, например "250m").
-    # None — запрос по `cores`, то есть целое ядро.
-    core_request: str | None = None
 
 
 def workload_name(attempt_id: UUID) -> str:
@@ -90,15 +88,11 @@ def attempt_fence(
 
 def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[str, Any]:
     labels = {ATTEMPT_LABEL: str(command.attempt_id), NODE_RUN_LABEL: str(command.node_run_id)}
-    pod: dict[str, Any] = {
-        "cores": 1,
-        "memory": config.memory,
+    pod = _pod_size(command.payload.pod) | {
         "labels": labels,
         "envFrom": [{"secretRef": {"name": config.s3_secret}}],
         "env": [{"name": "E3_S3_ENDPOINT_URL", "value": config.s3_endpoint_url}],
     }
-    if config.core_request is not None:
-        pod["coreRequest"] = config.core_request
     return {
         "apiVersion": f"{GROUP}/{VERSION}",
         "kind": "SparkApplication",
@@ -123,6 +117,15 @@ def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[
             "driver": pod | {"serviceAccount": config.service_account},
             "executor": pod | {"instances": 1},
         },
+    }
+
+
+def _pod_size(size: PodSize) -> dict[str, Any]:
+    """`coreRequest` — заявка в Kubernetes; `cores` — потоки Spark, целые, не меньше заявки."""
+    return {
+        "cores": math.ceil(size.cpu_millicores / 1000),
+        "coreRequest": f"{size.cpu_millicores}m",
+        "memory": f"{size.memory_mib}m",
     }
 
 

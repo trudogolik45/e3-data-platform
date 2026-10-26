@@ -45,9 +45,11 @@ flowchart LR
 - Регистрация блоков и пайплайнов, проверка DAG до запуска.
 - Многоузловой DAG `Read → Filter → Aggregate → Publish Dataset` на настоящем Spark в Kubernetes.
 - Ретраи с гарантией одной активной попытки на узел и восстановление после потери задания.
+- Отмена запусков и доступ по ролям проекта через OIDC.
+- Лимиты Project: 5 активных запусков и квота CPU и RAM на попытки (`E3_PROJECT_QUOTA_CPU_MILLICORES`, `E3_PROJECT_QUOTA_MEMORY_MIB`; по умолчанию — 10 попыток). Размер попытки — `E3_SPARK_CORE_REQUEST` и `E3_SPARK_MEMORY_MIB` Control Plane.
 - CI на каждый PR и e2e-прогон на kind на каждый push в `main`.
 
-Дальше по плану: отмена запусков, доступ по ролям (OIDC), лимиты, изоляция workload'ов, сквозная трассировка, затем Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).
+Дальше по плану: изоляция workload'ов, сквозная трассировка, затем Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).
 
 ## Стек
 

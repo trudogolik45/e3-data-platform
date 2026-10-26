@@ -4,6 +4,8 @@ from uuid import UUID
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from e3.shared.messages import PodSize
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="E3_", env_file=".env", extra="ignore")
@@ -33,6 +35,14 @@ class Settings(BaseSettings):
     # Сколько попытка может молчать, прежде чем Run Orchestrator спросит о ней Controller.
     reconcile_after_seconds: int = Field(default=600, gt=0)
 
+    # Размер pod'а попытки, driver и executor одинаковы: CPU-запрос в нотации Kubernetes
+    # ("250m" на тесном стенде, "0.5", "1") и память Spark. Уходит в SubmitExecution.
+    spark_core_request: str = "1"
+    spark_memory_mib: int = Field(default=512, gt=0)
+    # Project Quota (ADR-0005), общая для всех Project; не задана — 10 попыток по ресурсу.
+    project_quota_cpu_millicores: int | None = Field(default=None, gt=0)
+    project_quota_memory_mib: int | None = Field(default=None, gt=0)
+
     # Токен команды платформы для admin API. Не задан — регистрация блоков закрыта.
     platform_token: SecretStr | None = None
 
@@ -42,3 +52,15 @@ class Settings(BaseSettings):
     dev_organization_id: UUID = UUID("00000000-0000-4000-8000-000000000001")
     dev_project_id: UUID = UUID("00000000-0000-4000-8000-000000000002")
     dev_user_id: UUID = UUID("00000000-0000-4000-8000-000000000003")
+
+    def pod_size(self) -> PodSize:
+        return PodSize(
+            cpu_millicores=_millicores(self.spark_core_request), memory_mib=self.spark_memory_mib
+        )
+
+
+def _millicores(quantity: str) -> int:
+    """CPU в нотации Kubernetes: "250m" или доля ядра "0.5"."""
+    if quantity.endswith("m"):
+        return int(quantity.removesuffix("m"))
+    return round(float(quantity) * 1000)

@@ -1,8 +1,10 @@
 import pytest
 from pydantic import ValidationError
 
-from e3.api.app import create_app
+from e3.api.app import create_app, project_quota
+from e3.runs import Resources
 from e3.settings import Settings
+from e3.shared.messages import PodSize
 
 
 def test_app_refuses_to_start_with_dev_auth_outside_dev() -> None:
@@ -17,6 +19,51 @@ def test_settings_require_explicit_environment(monkeypatch: pytest.MonkeyPatch) 
 
     with pytest.raises(ValidationError, match="environment"):
         Settings(_env_file=None)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ("quota", "resource"),
+    [({"project_quota_cpu_millicores": 1999}, "CPU"), ({"project_quota_memory_mib": 1023}, "RAM")],
+)
+def test_app_refuses_quota_smaller_than_one_attempt(quota: dict[str, int], resource: str) -> None:
+    settings = Settings(environment="dev", **quota)  # pyright: ignore[reportArgumentType]
+
+    with pytest.raises(ValueError, match=f"Project Quota по {resource}"):
+        create_app(settings)
+
+
+def test_quota_of_exactly_one_attempt_is_allowed() -> None:
+    settings = Settings(
+        environment="test", project_quota_cpu_millicores=2000, project_quota_memory_mib=1024
+    )
+
+    assert project_quota(settings).capacity == 1
+
+
+@pytest.mark.parametrize(
+    ("core_request", "ceiling"),
+    [
+        (None, Resources(cpu_millicores=20_000, memory_mib=10_240)),
+        ("250m", Resources(cpu_millicores=5_000, memory_mib=10_240)),
+        ("0.5", Resources(cpu_millicores=10_000, memory_mib=10_240)),
+    ],
+)
+def test_default_quota_is_ten_attempts_of_configured_size(
+    monkeypatch: pytest.MonkeyPatch, core_request: str | None, ceiling: Resources
+) -> None:
+    monkeypatch.delenv("E3_SPARK_CORE_REQUEST", raising=False)
+    if core_request is not None:
+        monkeypatch.setenv("E3_SPARK_CORE_REQUEST", core_request)
+
+    quota = project_quota(Settings(environment="test", _env_file=None))  # pyright: ignore[reportCallIssue]
+
+    assert (quota.ceiling, quota.capacity) == (ceiling, 10)
+
+
+def test_attempt_size_comes_from_control_plane_settings() -> None:
+    settings = Settings(environment="test", spark_core_request="250m", spark_memory_mib=1024)
+
+    assert settings.pod_size() == PodSize(cpu_millicores=250, memory_mib=1024)
 
 
 def test_oidc_mode_needs_issuer_audience_and_jwks() -> None:

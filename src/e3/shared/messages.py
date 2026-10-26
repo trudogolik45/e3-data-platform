@@ -38,11 +38,24 @@ class _Envelope(BaseModel):
         return self.model_dump_json().encode()
 
 
+class PodSize(BaseModel):
+    """Заявка одного pod'а попытки, driver и executor одинаковы; размер задаёт Control Plane.
+
+    Значения по умолчанию — размер до появления поля: так читаются сообщения старого формата.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    cpu_millicores: int = Field(default=1000, gt=0, description="CPU-запрос, тысячные ядра")
+    memory_mib: int = Field(default=512, gt=0, description="Память Spark, MiB")
+
+
 class Submission(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     executable_ref: str = Field(pattern=OCI_DIGEST_PATTERN, description="OCI image digest блока")
     context: ExecutionContext
+    pod: PodSize = Field(default_factory=PodSize)
 
 
 class SubmitExecution(_Envelope):

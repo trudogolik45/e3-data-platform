@@ -35,7 +35,7 @@ from e3.runs import (
     kafka_publisher,
 )
 from e3.settings import Settings
-from e3.shared.messages import ExecutionEvent, SubmitExecution
+from e3.shared.messages import CancelExecution, ExecutionEvent, SubmitExecution
 from e3.shared.storage import ObjectStorage
 from tests.fakes.execution_controller import FakeExecutionController
 from tests.fakes.oidc import AUDIENCE as OIDC_AUDIENCE
@@ -48,6 +48,7 @@ from tests.integration.graphs import (
     read_beside_side_graph,
     read_filter_aggregate_graph,
     read_graph,
+    read_then_left_and_right_graph,
 )
 
 pytestmark = pytest.mark.integration
@@ -332,6 +333,12 @@ async def new_read_beside_side_pipeline(api: Api) -> tuple[str, int]:
     return await publish_pipeline(api, read_beside_side_graph(read, side))
 
 
+async def new_read_then_left_and_right_pipeline(api: Api) -> tuple[str, int]:
+    read = await new_block(api, "read", "data")
+    left, right = await new_block(api, "left", "result"), await new_block(api, "right", "result")
+    return await publish_pipeline(api, read_then_left_and_right_graph(read, left, right))
+
+
 async def new_read_filter_aggregate_pipeline(api: Api) -> tuple[str, int]:
     read = await new_block(api, "read", "data")
     filter_block = await new_block(api, "filter", "result")
@@ -490,6 +497,21 @@ class Plant:
 
 
 EVENT_POLLS = 50
+
+
+async def stop_proven(plant: Plant, run_id: str, command: SubmitExecution) -> None:
+    """Controller получает отмену раньше старта: попытка не запустится, `read` — CANCELLED."""
+    await drain(plant.relay.publish_pending)
+    [stop] = [
+        c
+        for c in await plant.fake.quiet_commands()
+        if isinstance(c, CancelExecution) and c.attempt_id == command.attempt_id
+    ]
+    controller = plant.fake.controller()
+    await controller.handle(stop)
+    await controller.handle(command)
+    await controller.report()
+    await plant.consume_until(run_id, "read", "CANCELLED")
 
 
 async def drain(step: Callable[[], Awaitable[int]]) -> None:

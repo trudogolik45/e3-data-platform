@@ -74,6 +74,8 @@ class FakeExecutionController:
         )
         self._producer = AIOKafkaProducer(bootstrap_servers=bootstrap_servers, acks="all")
         self.cluster = InMemorySparkApplications()
+        # SubmitExecution, прочитанные в поисках чужой: порядка между партициями нет.
+        self._deferred: list[SubmitExecution] = []
 
     async def __aenter__(self) -> Self:
         """Слушает только команды, отправленные после старта."""
@@ -109,11 +111,18 @@ class FakeExecutionController:
             return await self._command()
 
     async def submission(self, node_run_id: UUID) -> SubmitExecution:
-        """Ближайшая SubmitExecution для NodeRun; чужие команды пропускает."""
+        """Ближайшая SubmitExecution для NodeRun; чужие откладывает для их NodeRun."""
+        for command in self._deferred:
+            if command.node_run_id == node_run_id:
+                self._deferred.remove(command)
+                return command
         while True:
             command = await self.next_command()
-            if isinstance(command, SubmitExecution) and command.node_run_id == node_run_id:
+            if not isinstance(command, SubmitExecution):
+                continue
+            if command.node_run_id == node_run_id:
                 return command
+            self._deferred.append(command)
 
     async def quiet_commands(self) -> list[Command]:
         """Все команды, пришедшие до паузы в `QUIET_SECONDS`."""

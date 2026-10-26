@@ -88,6 +88,8 @@ services:
       E3_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       # E2E укорачивает таймаут reconciliation, чтобы потерянная попытка нашлась за время теста.
       E3_RECONCILE_AFTER_SECONDS: ${E3_RECONCILE_AFTER_SECONDS:-600}
+      # Размер pod'а попытки задаёт Control Plane; E2E на тесном стенде просит долю ядра.
+      E3_SPARK_CORE_REQUEST: ${E3_SPARK_CORE_REQUEST:-1}
       # Только для локальной разработки: токен admin API регистрации блоков.
       E3_PLATFORM_TOKEN: dev-platform-token
     ports: ["8000:8000"]

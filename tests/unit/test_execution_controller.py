@@ -3,7 +3,6 @@ from uuid import uuid4
 import pytest
 
 from e3.execution.controller import ExecutionController
-from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import (
     CANCELLED_LABEL,
     COMMAND_ANNOTATION,
@@ -17,6 +16,7 @@ from e3.shared.messages import (
     ExecutionEvent,
     ExecutionFailed,
     ExecutionSucceeded,
+    PodSize,
     Submission,
     SubmitExecution,
     cancel,
@@ -51,7 +51,7 @@ class StoredResults:
         return self.results.get(context.output_prefix)
 
 
-def command() -> SubmitExecution:
+def command(pod: PodSize | None = None) -> SubmitExecution:
     node_run_id, attempt_id = uuid4(), uuid4()
     context = ExecutionContext(
         node_run_id=node_run_id,
@@ -64,7 +64,7 @@ def command() -> SubmitExecution:
         node_run_id=node_run_id,
         attempt_id=attempt_id,
         trace_id="run-1",
-        payload=Submission(executable_ref=IMAGE, context=context),
+        payload=Submission(executable_ref=IMAGE, context=context, pod=pod or PodSize()),
     )
 
 
@@ -170,30 +170,34 @@ async def test_application_not_yet_running_is_not_reported() -> None:
     assert (pending, events.sent) == (1, [])
 
 
-async def test_spark_pods_request_configured_cpu_share_of_core(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("E3_SPARK_CORE_REQUEST", "250m")
-    config = ExecutionSettings(_env_file=None).workload()  # pyright: ignore[reportCallIssue]
-    applications = InMemorySparkApplications()
-    execution = ExecutionController(applications, RecordedEvents(), StoredResults(), config)
-
-    await execution.submit(command())
-
-    [spec] = [app["spec"] for app in applications.items.values()]
-    for pod in (spec["driver"], spec["executor"]):
-        assert (pod["cores"], pod["coreRequest"]) == (1, "250m")
-
-
-async def test_spark_pods_request_whole_core_by_default() -> None:
+async def test_spark_pods_request_size_from_submit_execution() -> None:
     execution, applications, _, _ = controller()
 
-    await execution.submit(command())
+    await execution.submit(command(PodSize(cpu_millicores=250, memory_mib=1024)))
 
     [spec] = [app["spec"] for app in applications.items.values()]
     for pod in (spec["driver"], spec["executor"]):
-        assert pod["cores"] == 1
-        assert "coreRequest" not in pod
+        assert (pod["cores"], pod["coreRequest"], pod["memory"]) == (1, "250m", "1024m")
+
+
+async def test_spark_pods_round_cores_up_to_cover_request() -> None:
+    execution, applications, _, _ = controller()
+
+    await execution.submit(command(PodSize(cpu_millicores=1500, memory_mib=512)))
+
+    [spec] = [app["spec"] for app in applications.items.values()]
+    assert (spec["driver"]["cores"], spec["driver"]["coreRequest"]) == (2, "1500m")
+
+
+async def test_submit_execution_without_size_requests_whole_core_and_512m() -> None:
+    execution, applications, _, _ = controller()
+    old_format = command().model_dump(mode="json")
+    del old_format["payload"]["pod"]
+
+    await execution.submit(SubmitExecution.model_validate(old_format))
+
+    [spec] = [app["spec"] for app in applications.items.values()]
+    assert (spec["executor"]["coreRequest"], spec["executor"]["memory"]) == ("1000m", "512m")
 
 
 def name(submit: SubmitExecution) -> str:
