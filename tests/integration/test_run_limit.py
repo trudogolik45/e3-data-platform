@@ -12,7 +12,6 @@ import pytest
 from e3.api.app import create_app
 from e3.runs.orchestrator import ACTIVE_RUNS_LIMIT as LIMIT
 from e3.runs.orchestrator import DISPATCH_BATCH
-from e3.shared.messages import CancelExecution, SubmitExecution
 from tests.integration.conftest import (
     Api,
     Plant,
@@ -20,6 +19,7 @@ from tests.integration.conftest import (
     drain,
     own_project,
     run_request,
+    stop_proven,
 )
 
 pytestmark = pytest.mark.integration
@@ -39,21 +39,6 @@ async def start(api: Api, request: dict[str, Any]) -> str:
 
 async def states(plant: Plant, run_ids: list[str]) -> list[str]:
     return [(await plant.api.run(run_id))["state"] for run_id in run_ids]
-
-
-async def stop_proven(plant: Plant, run_id: str, command: SubmitExecution) -> None:
-    """Controller получает отмену раньше старта: попытка не запустится, `read` — CANCELLED."""
-    await drain(plant.relay.publish_pending)
-    [stop] = [
-        c
-        for c in await plant.fake.quiet_commands()
-        if isinstance(c, CancelExecution) and c.attempt_id == command.attempt_id
-    ]
-    controller = plant.fake.controller()
-    await controller.handle(stop)
-    await controller.handle(command)
-    await controller.report()
-    await plant.consume_until(run_id, "read", "CANCELLED")
 
 
 async def test_sixth_run_waits_in_pending_without_started_nodes(plant: Plant) -> None:

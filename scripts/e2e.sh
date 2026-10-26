@@ -27,6 +27,9 @@ export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
 export COMPOSE_PROJECT_NAME=e3-e2e
 # Удалённую посреди запуска попытку reconciliation должна найти за секунды, а не минуты.
 export E3_RECONCILE_AFTER_SECONDS=15
+# Размер pod'а задаёт Control Plane: на 2 vCPU раннера CI целое ядро на driver
+# и executor не помещается рядом с системой kind.
+export E3_SPARK_CORE_REQUEST=250m
 export PATH="$CACHE/bin:$PATH"
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -157,8 +160,6 @@ controller_env() {
   export E3_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
   export E3_S3_ENDPOINT_URL=http://localhost:9000
   export E3_SPARK_S3_ENDPOINT_URL="http://$MINIO_IN_KIND:9000"
-  # На 2 vCPU раннера CI целое ядро на driver и executor не помещается рядом с системой kind.
-  export E3_SPARK_CORE_REQUEST=250m
 }
 
 start_controller() {

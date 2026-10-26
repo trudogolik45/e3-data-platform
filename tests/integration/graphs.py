@@ -79,6 +79,17 @@ def read_beside_side_graph(read: str, side: str) -> Graph:
     return graph
 
 
+def read_then_left_and_right_graph(read: str, left: str, right: str) -> Graph:
+    """`source → Read → Publish Dataset(result)`, и выход Read читают ещё Left и Right."""
+    graph = read_graph(read)
+    graph["nodes"] += [block_node("left", left), block_node("right", right)]
+    graph["edges"] += [
+        edge(at("read", "data"), at("left", "source")),
+        edge(at("read", "data"), at("right", "source")),
+    ]
+    return graph
+
+
 def read_filter_aggregate_graph(read: str, filter_block: str, aggregate: str) -> Graph:
     """`source → Read → Filter → Aggregate → Publish Dataset(result)`."""
     return {

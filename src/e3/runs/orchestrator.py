@@ -3,13 +3,16 @@
 Запуск продвигается шагами, каждый шаг — короткая транзакция PostgreSQL:
 
 - `start` создаёт PipelineRun и его NodeRun в PENDING;
-- `dispatch_pending` запускает готовые узлы PENDING-запусков: BLOCK — командой
-  SubmitExecution через outbox, Publish Dataset — переводом в RUNNING; у Project
-  не больше `ACTIVE_RUNS_LIMIT` активных запусков, остальные ждут по FIFO;
+- `dispatch_pending` по каждому Project под его замком переводит PENDING-запуски
+  в RUNNING (не больше `ACTIVE_RUNS_LIMIT` активных, остальные ждут по FIFO) и даёт
+  готовым BLOCK-узлам RUNNING-запусков место в Project Quota: попытка уходит
+  командой SubmitExecution через outbox, а без места узел ждёт в PENDING, тоже
+  по FIFO запусков (ADR-0005). Publish Dataset квоту не занимает и стартует сразу;
 - `cancel` запрашивает отмену: работающие попытки получают CancelExecution, итог
   CANCELLED фиксируется только по доказанной остановке (так же гасит узлы Fail-fast);
-- `handle_event` применяет событие Execution Plane к Current Attempt; провал
-  с ретраебельной причиной сразу назначает следующую попытку (ADR-0003);
+- `handle_event` применяет событие Execution Plane к Current Attempt; после провала
+  с ретраебельной причиной узел снова ждёт места в PENDING (ADR-0003). Итог попытки
+  и принятый результат сразу запускают тот же выбор по Project, что и `dispatch_pending`;
 - `finalize_pending` проверяет manifest NodeRun в FINALIZING и принимает NodeOutput;
 - `publish_pending` выполняет Publish Dataset через Dataset Catalog;
 - `reconcile_pending` просит Execution Controller проверить попытки, о которых
@@ -27,9 +30,10 @@ from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, SQLColumnExpression, Uuid, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.orm import aliased
 
 from e3 import catalog
 from e3.blocks import BlockRegistry
@@ -57,6 +61,7 @@ from e3.runs.models import ExecutionAttemptRow, NodeOutputRow, NodeRunRow, Pipel
 from e3.runs.nodes import NodeKind, build_node_runs, node_inputs, progress
 from e3.runs.outbox import OutboxRelay, Publisher, enqueue, first_delivery, unsent
 from e3.runs.progress import NodeState, RunState, plan
+from e3.runs.quota import ProjectQuota
 from e3.shared.contracts import (
     BlockSpec,
     DataRef,
@@ -74,6 +79,7 @@ from e3.shared.messages import (
     ExecutionLost,
     ExecutionStarted,
     ExecutionSucceeded,
+    PodSize,
     Submission,
     SubmitExecution,
     cancel,
@@ -173,6 +179,8 @@ class RunOrchestrator:
         storage: ObjectStorage,
         identity: IdentityService,
         reconcile_after: timedelta,
+        pod: PodSize,
+        quota: ProjectQuota,
     ) -> None:
         self._sessions = sessions
         self._datasets = datasets
@@ -181,6 +189,8 @@ class RunOrchestrator:
         self._storage = storage
         self._identity = identity
         self._reconcile_after = reconcile_after
+        self._pod = pod
+        self._quota = quota
 
     async def start(
         self, principal: Principal, request: RunRequest, *, idempotency_key: str
@@ -260,62 +270,105 @@ class RunOrchestrator:
         ]
 
     async def dispatch_pending(self) -> int:
-        """Переводит PENDING-запуски в RUNNING по FIFO, не больше лимита на Project."""
+        """Стартует ждущие запуски и попытки; возвращает их общее число."""
         started = 0
-        for project_id in await self._projects_with_room():
-            started += await self._dispatch_project(project_id)
+        for project_id in await self._projects_to_dispatch():
+            started += await self._dispatch_isolated(project_id)
         return started
 
-    async def _projects_with_room(self) -> Sequence[UUID]:
-        """Project с ждущими запусками и свободным местом, по самому давнему ждущему.
+    async def _projects_to_dispatch(self) -> list[UUID]:
+        """Project, где есть что стартовать: ждущий запуск или готовый узел, и есть место.
 
         Заполненный Project сюда не попадает и не забивает пачку остальным. Это
-        подсказка без замка: лимит решает пересчёт в `_dispatch_project`.
+        подсказка без замка: лимит и квоту решает пересчёт в `_dispatch_project`.
         """
-        pending = PipelineRunRow.state == RunState.PENDING
-        active = PipelineRunRow.state.in_(ACTIVE_RUNS)
         async with self._sessions.begin() as session:
-            projects = await session.scalars(
-                select(PipelineRunRow.project_id)
-                .where(PipelineRunRow.state.in_(ACTIVE_RUNS | {RunState.PENDING}))
-                .group_by(PipelineRunRow.project_id)
-                .having(
-                    func.count().filter(pending) > 0,
-                    func.count().filter(active) < ACTIVE_RUNS_LIMIT,
-                )
-                .order_by(func.min(PipelineRunRow.created_at).filter(pending))
-                .limit(DISPATCH_BATCH)
-            )
-            return projects.all()
+            runs = await session.scalars(_projects_with_waiting_runs())
+            nodes = await session.scalars(_projects_with_waiting_nodes(self._quota.capacity))
+            return list(dict.fromkeys([*runs, *nodes]))
 
     async def _dispatch_project(self, project_id: UUID) -> int:
-        """Пересчёт активных и старт — под замком Project: параллельный проход ждёт."""
+        """Пересчёт и старт — под замком Project: параллельный проход ждёт."""
         async with self._sessions.begin() as session:
             await session.execute(select(func.pg_advisory_xact_lock(_project_lock_key(project_id))))
-            active = await session.scalar(
-                select(func.count()).where(
-                    PipelineRunRow.project_id == project_id,
-                    PipelineRunRow.state.in_(ACTIVE_RUNS),
-                )
+            started = await self._start_runs(session, project_id)
+            return started + await self._grant(session, project_id)
+
+    async def _start_runs(self, session: AsyncSession, project_id: UUID) -> int:
+        active = await session.scalar(
+            select(func.count()).where(
+                PipelineRunRow.project_id == project_id,
+                PipelineRunRow.state.in_(ACTIVE_RUNS),
             )
-            room = ACTIVE_RUNS_LIMIT - (active or 0)
-            if room <= 0:
-                return 0
-            runs = (
-                await session.scalars(
-                    select(PipelineRunRow)
-                    .where(
-                        PipelineRunRow.project_id == project_id,
-                        PipelineRunRow.state == RunState.PENDING,
-                    )
-                    .order_by(PipelineRunRow.created_at, PipelineRunRow.id)
-                    .limit(room)
-                    .with_for_update()
+        )
+        room = ACTIVE_RUNS_LIMIT - (active or 0)
+        if room <= 0:
+            return 0
+        runs = (
+            await session.scalars(
+                select(PipelineRunRow)
+                .where(
+                    PipelineRunRow.project_id == project_id,
+                    PipelineRunRow.state == RunState.PENDING,
                 )
-            ).all()
-            for run in runs:
-                await self._advance(session, run)
-            return len(runs)
+                .order_by(PipelineRunRow.created_at, PipelineRunRow.id)
+                .limit(room)
+                .with_for_update()
+            )
+        ).all()
+        for run in runs:
+            await self._advance(session, run)
+        return len(runs)
+
+    async def _grant(self, session: AsyncSession, project_id: UUID) -> int:
+        """Места Project Quota готовым BLOCK-узлам по FIFO запусков; ретраи без приоритета.
+
+        Первый узел без места останавливает очередь: все попытки одного размера.
+        """
+        live = await session.scalar(_live_attempts(project_id)) or 0
+        runs = (
+            await session.scalars(
+                select(PipelineRunRow)
+                .where(
+                    PipelineRunRow.project_id == project_id,
+                    PipelineRunRow.state == RunState.RUNNING,
+                )
+                .order_by(PipelineRunRow.created_at, PipelineRunRow.id)
+                .with_for_update()
+            )
+        ).all()
+        granted = 0
+        for run in runs:
+            for node in await _ready_blocks(session, run):
+                if live >= self._quota.capacity:
+                    self._log_exceeded(project_id, live)
+                    return granted
+                await self._submit_attempt(session, run, node)
+                live += 1
+                granted += 1
+        return granted
+
+    def _log_exceeded(self, project_id: UUID, live: int) -> None:
+        used, ceiling = self._quota.used(live), self._quota.ceiling
+        log.info(
+            "project_quota_exceeded: project_id=%s, CPU %sm из %sm, RAM %sMi из %sMi",
+            project_id,
+            used.cpu_millicores,
+            ceiling.cpu_millicores,
+            used.memory_mib,
+            ceiling.memory_mib,
+        )
+
+    async def _dispatch_isolated(self, project_id: UUID) -> int:
+        """Сбой одного Project не роняет проход и не держит остальные: повторится позже.
+
+        Так же зовётся быстрый путь после итога: при сбое место раздаст `dispatch_pending`.
+        """
+        try:
+            return await self._dispatch_project(project_id)
+        except Exception:
+            log.exception("Project %s не продвинулся, повторится", project_id)
+            return 0
 
     async def cancel(self, pipeline_run_id: UUID) -> PipelineRun:
         """Запрашивает отмену; повтор и отмена во время Fail-fast ничего не меняют."""
@@ -346,6 +399,9 @@ class RunOrchestrator:
                 ExecutionAttemptRow, event.attempt_id, with_for_update=True
             )
             await self._apply(session, run, node, attempt, event)
+            ended = attempt.state not in LIVE
+        if ended:
+            await self._dispatch_isolated(run.project_id)
 
     async def finalize_pending(self) -> int:
         """Возвращает число NodeRun, по которым проход продвинулся."""
@@ -458,26 +514,28 @@ class RunOrchestrator:
             by_id[node_run_id].state = NodeState.SKIPPED
         for node_run_id in decision.cancel:
             await _cancel_node(session, by_id[node_run_id])
+        # BLOCK-узлы ждут в PENDING места в Project Quota: его выдаёт `_grant`.
         for node_run_id in decision.start:
-            await self._start_node(session, run, by_id[node_run_id])
+            if by_id[node_run_id].kind == NodeKind.SYSTEM:
+                by_id[node_run_id].state = NodeState.RUNNING
         run.state = decision.run_state
         if run.failed_node_run_id is None:
             run.failed_node_run_id = _first_failed(nodes)
 
-    async def _start_node(
+    async def _submit_attempt(
         self, session: AsyncSession, run: PipelineRunRow, node: NodeRunRow
     ) -> None:
-        if node.kind == NodeKind.SYSTEM:
-            node.state = NodeState.RUNNING
-            return
-        await self._submit_attempt(session, run, node, number=1)
+        """Попытка, её номер, Current Attempt и SubmitExecution в outbox — одной транзакцией.
 
-    async def _submit_attempt(
-        self, session: AsyncSession, run: PipelineRunRow, node: NodeRunRow, *, number: int
-    ) -> None:
-        """Попытка, её номер, Current Attempt и SubmitExecution в outbox — одной транзакцией."""
+        Номер — следующий за последней попыткой узла: ожидание места его не тратит.
+        """
         if node.executable_ref is None:
             raise RuntimeError(f"у BLOCK NodeRun {node.id} нет executable_ref")
+        number = await session.scalar(
+            select(func.coalesce(func.max(ExecutionAttemptRow.number), 0) + 1).where(
+                ExecutionAttemptRow.node_run_id == node.id
+            )
+        )
         attempt_id = uuid4()
         context = ExecutionContext(
             node_run_id=node.id,
@@ -490,7 +548,7 @@ class RunOrchestrator:
             node_run_id=node.id,
             attempt_id=attempt_id,
             trace_id=str(run.id),
-            payload=Submission(executable_ref=node.executable_ref, context=context),
+            payload=Submission(executable_ref=node.executable_ref, context=context, pod=self._pod),
         )
         session.add(
             ExecutionAttemptRow(
@@ -576,14 +634,14 @@ class RunOrchestrator:
         reason: AttemptReason,
         error: str,
     ) -> None:
-        """Провал доказуемо мёртвой попытки: следующая попытка или FAILED узла.
+        """Провал доказуемо мёртвой попытки: узел ждёт места для следующей или FAILED.
 
         Отменяемый узел не ретраится: запуск уже останавливается.
         """
         _fail(attempt, reason, error)
         node.error = error
         if node.state != NodeState.CANCELLING and should_retry(attempt.number, reason):
-            await self._submit_attempt(session, run, node, number=attempt.number + 1)
+            node.state = NodeState.PENDING
             return
         node.state = NodeState.FAILED
         await self._advance(session, run)
@@ -649,7 +707,10 @@ class RunOrchestrator:
         )
 
     async def _transition(self, node_run_id: UUID, expected: NodeState, change: NodeChange) -> None:
-        """Меняет NodeRun, если он всё ещё в `expected`, и продвигает запуск."""
+        """Меняет NodeRun, если он всё ещё в `expected`, и продвигает запуск.
+
+        Итог узла освобождает место в квоте и готовит downstream: сразу выбор по Project.
+        """
         async with self._sessions.begin() as session:
             locked = await _lock_node(session, node_run_id)
             if locked is None:
@@ -659,6 +720,7 @@ class RunOrchestrator:
                 return
             await change(session, node)
             await self._advance(session, run)
+        await self._dispatch_isolated(run.project_id)
 
     async def _node_ids(self, kind: NodeKind, state: NodeState) -> list[UUID]:
         async with self._sessions() as session:
@@ -691,6 +753,79 @@ async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUI
         log.exception("NodeRun %s не продвинулся, повторится", node_run_id)
         return False
     return True
+
+
+def _projects_with_waiting_runs() -> Select[UUID]:
+    """Project с PENDING-запусками и местом под `ACTIVE_RUNS_LIMIT`, по самому давнему."""
+    pending = PipelineRunRow.state == RunState.PENDING
+    active = PipelineRunRow.state.in_(ACTIVE_RUNS)
+    return (
+        select(PipelineRunRow.project_id)
+        .where(PipelineRunRow.state.in_(ACTIVE_RUNS | {RunState.PENDING}))
+        .group_by(PipelineRunRow.project_id)
+        .having(
+            func.count().filter(pending) > 0,
+            func.count().filter(active) < ACTIVE_RUNS_LIMIT,
+        )
+        .order_by(func.min(PipelineRunRow.created_at).filter(pending))
+        .limit(DISPATCH_BATCH)
+    )
+
+
+def _projects_with_waiting_nodes(capacity: int) -> Select[UUID]:
+    """Project с готовым PENDING BLOCK-узлом в RUNNING-запуске и местом в квоте.
+
+    Готов — все upstream SUCCEEDED; узел за ещё работающим upstream Project сюда не тянет.
+    """
+    upstream = aliased(NodeRunRow)
+    inputs = func.jsonb_each(NodeRunRow.inputs).table_valued("value")
+    unfinished_upstream = (
+        select(1)
+        .select_from(inputs)
+        .join(upstream, upstream.id == inputs.c.value.op("->>")("node_run_id").cast(Uuid))
+        .where(upstream.state != NodeState.SUCCEEDED)
+    )
+    return (
+        select(PipelineRunRow.project_id)
+        .join(NodeRunRow, NodeRunRow.pipeline_run_id == PipelineRunRow.id)
+        .where(
+            PipelineRunRow.state == RunState.RUNNING,
+            PipelineRunRow.failed_node_run_id.is_(None),
+            NodeRunRow.kind == NodeKind.BLOCK,
+            NodeRunRow.state == NodeState.PENDING,
+            ~unfinished_upstream.exists(),
+            _live_attempts(PipelineRunRow.project_id).scalar_subquery() < capacity,
+        )
+        .group_by(PipelineRunRow.project_id)
+        .order_by(func.min(PipelineRunRow.created_at))
+        .limit(DISPATCH_BATCH)
+    )
+
+
+def _live_attempts(project_id: UUID | SQLColumnExpression[UUID]) -> Select[int]:
+    """Число LIVE-попыток Project: столько мест квоты занято, отменённая держит своё до итога."""
+    node, run = aliased(NodeRunRow), aliased(PipelineRunRow)
+    return (
+        select(func.count())
+        .select_from(ExecutionAttemptRow)
+        .join(node, node.id == ExecutionAttemptRow.node_run_id)
+        .join(run, run.id == node.pipeline_run_id)
+        .where(run.project_id == project_id, ExecutionAttemptRow.state.in_(LIVE))
+    )
+
+
+async def _ready_blocks(session: AsyncSession, run: PipelineRunRow) -> list[NodeRunRow]:
+    """BLOCK-узлы запуска, готовые к попытке; остановка запуска готовых не даёт."""
+    nodes = (
+        await session.scalars(
+            select(NodeRunRow)
+            .where(NodeRunRow.pipeline_run_id == run.id)
+            .order_by(NodeRunRow.node_id)
+            .with_for_update()
+        )
+    ).all()
+    ready = set(plan([progress(node) for node in nodes]).start)
+    return [node for node in nodes if node.id in ready and node.kind == NodeKind.BLOCK]
 
 
 def _project_lock_key(project_id: UUID) -> int:

@@ -48,6 +48,8 @@ def create_app(
         storage=storage,
         identity=app.state.identity,
         reconcile_after=timedelta(seconds=settings.reconcile_after_seconds),
+        pod=settings.pod_size(),
+        quota=project_quota(settings),
     )
     app.state.platform_token = settings.platform_token
     app.include_router(identity.router)
@@ -70,6 +72,15 @@ def _run_orchestrator_in_background(settings: Settings):
             yield
 
     return lifespan
+
+
+def project_quota(settings: Settings) -> runs.ProjectQuota:
+    """Квота меньше одной попытки — ValueError: Control Plane не стартует."""
+    return runs.ProjectQuota.configured(
+        settings.pod_size(),
+        cpu_millicores=settings.project_quota_cpu_millicores,
+        memory_mib=settings.project_quota_memory_mib,
+    )
 
 
 def create_storage(settings: Settings) -> ObjectStorage:
