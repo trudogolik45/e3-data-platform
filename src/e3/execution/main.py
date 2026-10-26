@@ -119,8 +119,8 @@ def _storage(settings: ExecutionSettings) -> ObjectStorage:
     client = boto3.client(
         "s3",
         endpoint_url=settings.s3_endpoint_url,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
+        aws_access_key_id=settings.s3_access_key.get_secret_value(),
+        aws_secret_access_key=settings.s3_secret_key.get_secret_value(),
         region_name=settings.s3_region,
         config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
     )
@@ -130,4 +130,4 @@ def _storage(settings: ExecutionSettings) -> ObjectStorage:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(serve(ExecutionSettings()))
+        asyncio.run(serve(ExecutionSettings()))  # pyright: ignore[reportCallIssue]

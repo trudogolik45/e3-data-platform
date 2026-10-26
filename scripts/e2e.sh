@@ -159,6 +159,7 @@ register_block() {
 controller_env() {
   export E3_KAFKA_BOOTSTRAP_SERVERS=localhost:9092
   export E3_S3_ENDPOINT_URL=http://localhost:9000
+  export E3_S3_ACCESS_KEY=minioadmin E3_S3_SECRET_KEY=minioadmin
   export E3_SPARK_S3_ENDPOINT_URL="http://$MINIO_IN_KIND:9000"
 }
 

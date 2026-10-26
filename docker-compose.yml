@@ -85,6 +85,8 @@ services:
       E3_DATABASE_URL: postgresql+asyncpg://e3:e3@postgres:5432/e3
       E3_S3_ENDPOINT_URL: http://minio:9000
       E3_S3_PUBLIC_ENDPOINT_URL: http://localhost:9000
+      E3_S3_ACCESS_KEY: minioadmin
+      E3_S3_SECRET_KEY: minioadmin
       E3_KAFKA_BOOTSTRAP_SERVERS: kafka:19092
       # E2E укорачивает таймаут reconciliation, чтобы потерянная попытка нашлась за время теста.
       E3_RECONCILE_AFTER_SECONDS: ${E3_RECONCILE_AFTER_SECONDS:-600}

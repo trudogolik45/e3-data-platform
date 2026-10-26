@@ -177,12 +177,12 @@ async def test_spark_publishes_typed_aggregates(finished: FinishedRun) -> None:
 
 def _rows(dataset_id: str, version_id: str) -> list[tuple[Any, ...]]:
     """Строки опубликованной версии прямо из MinIO стенда."""
-    settings = Settings(environment="dev")
+    settings = Settings(environment="dev")  # pyright: ignore[reportCallIssue]
     s3 = boto3.client(
         "s3",
         endpoint_url=settings.s3_endpoint_url,
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
+        aws_access_key_id=settings.s3_access_key.get_secret_value(),
+        aws_secret_access_key=settings.s3_secret_key.get_secret_value(),
         region_name=settings.s3_region,
     )
     prefix = f"datasets/{dataset_id}/{version_id}"
@@ -226,7 +226,7 @@ async def test_redelivered_submit_execution_leaves_single_spark_application(
     finished: FinishedRun,
 ) -> None:
     attempt_id = finished.nodes["read"]["attempt_id"]
-    settings = ExecutionSettings()
+    settings = ExecutionSettings()  # pyright: ignore[reportCallIssue]
     await kube_config.load_kube_config()
     api = ApiClient()
     try:
