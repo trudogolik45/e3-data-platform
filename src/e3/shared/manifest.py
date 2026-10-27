@@ -42,7 +42,9 @@ class ManifestFile(BaseModel):
     @classmethod
     def stays_in_manifest_directory(cls, path: str) -> str:
         if not is_relative_path(path):
-            raise ValueError("путь должен быть относительным и не выходить из каталога manifest")
+            raise ValueError(
+                f"{path!r}: путь должен быть относительным и не выходить из каталога manifest"
+            )
         return path
 
 
