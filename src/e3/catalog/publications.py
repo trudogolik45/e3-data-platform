@@ -73,8 +73,6 @@ class Publications:
         return manifest
 
     async def _copy_file(self, file: ManifestFile, source_key: str, target_key: str) -> None:
-        if file.path.startswith("/") or ".." in file.path.split("/"):
-            raise PublicationRejected(f"{file.path} выходит за каталог manifest")
         await self._storage.copy(source_key, target_key)
         copied = await self._storage.head(target_key)
         if copied is None or copied.checksum_sha256 != file.checksum_sha256:

@@ -10,7 +10,7 @@ from e3.shared.contracts import (
     DatasetVersionRef,
     NodeOutputRef,
 )
-from e3.shared.manifest import Column
+from e3.shared.manifest import Column, ManifestFile
 from e3.shared.schemas import json_schemas
 
 DIGEST = "registry.local/e3/read@sha256:" + "a" * 64
@@ -85,6 +85,23 @@ def test_manifest_column_carries_real_type(column_type: str) -> None:
 def test_manifest_column_rejects_unknown_type() -> None:
     with pytest.raises(ValidationError, match="type"):
         Column.model_validate({"name": "amount", "type": "decimal"})
+
+
+@pytest.mark.parametrize("path", ["part-0.parquet", "data/part-0.parquet"])
+def test_manifest_file_accepts_path_inside_manifest_directory(path: str) -> None:
+    file = ManifestFile.model_validate(manifest_file(path))
+
+    assert file.path == path
+
+
+@pytest.mark.parametrize("path", ["../x", "a/../../x", "/abs/x", "a//b", "./x", "", "a/"])
+def test_manifest_file_rejects_path_leaving_manifest_directory(path: str) -> None:
+    with pytest.raises(ValidationError, match="path"):
+        ManifestFile.model_validate(manifest_file(path))
+
+
+def manifest_file(path: str) -> dict[str, Any]:
+    return {"path": path, "size_bytes": 1, "checksum_sha256": "x"}
 
 
 def test_json_schema_covers_all_contracts() -> None:
