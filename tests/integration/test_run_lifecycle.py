@@ -8,6 +8,7 @@ Aggregate → Publish Dataset`.
 """
 
 import json
+from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
@@ -18,8 +19,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from e3.api.app import create_app
 from e3.runs import RunOrchestrator
 from e3.runs.models import InboxRow, OutboxRow
-from e3.shared.contracts import DatasetVersionRef, NodeOutputRef
-from e3.shared.messages import failed, started, succeeded
+from e3.shared.contracts import DatasetVersionRef, ExecutionResult, NodeOutputRef
+from e3.shared.messages import SubmitExecution, failed, started, succeeded
 from e3.shared.storage import ObjectStorage, StorageUnavailable
 from tests.integration.conftest import (
     Plant,
@@ -198,6 +199,60 @@ async def test_failed_execution_fails_run_without_publication(plant: Plant) -> N
     read = await plant.node(run_id, "read")
     assert run["state"] == "FAILED"
     assert read["error"] == "нет результата"
+    assert await plant.state(run_id, "publish") == "SKIPPED"
+    assert await plant.api.versions(UUID(run["outputs"]["result"]["dataset_id"])) == []
+
+
+def manifest_with_foreign_file(plant: Plant, command: SubmitExecution) -> str:
+    """Свой manifest попытки, чей файл через `..` — CSV входного Dataset."""
+    source = command.payload.context.inputs["source"]
+    manifest = json.loads(read_object(plant.s3, plant.settings, source.manifest_uri))
+    source_dir = source.manifest_uri.removeprefix(f"s3://{plant.settings.s3_bucket}/")
+    manifest["files"][0]["path"] = (
+        "../../../../" + source_dir.rpartition("/")[0] + "/" + (manifest["files"][0]["path"])
+    )
+    uri = f"{command.payload.context.output_prefix}/data/manifest.json"
+    key = uri.removeprefix(f"s3://{plant.settings.s3_bucket}/")
+    plant.s3.put_object(
+        Bucket=plant.settings.s3_bucket, Key=key, Body=json.dumps(manifest).encode()
+    )
+    return uri
+
+
+def manifest_uri_escaping_attempt(plant: Plant, command: SubmitExecution) -> str:
+    """URI из каталога попытки через `..` — на manifest входного Dataset."""
+    source = command.payload.context.inputs["source"]
+    dataset_key = source.manifest_uri.removeprefix(f"s3://{plant.settings.s3_bucket}/")
+    return f"{command.payload.context.output_prefix}/../../../{dataset_key}"
+
+
+@pytest.mark.parametrize(
+    ("foreign_output", "reason"),
+    [
+        (manifest_with_foreign_file, "manifest не читается"),
+        (manifest_uri_escaping_attempt, "manifest вне каталога попытки"),
+    ],
+)
+async def test_output_pointing_outside_attempt_fails_node_without_publication(
+    plant: Plant, foreign_output: Callable[[Plant, SubmitExecution], str], reason: str
+) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    context = command.payload.context
+    result = ExecutionResult(
+        node_run_id=context.node_run_id,
+        attempt_id=context.attempt_id,
+        outputs={"data": foreign_output(plant, command)},
+    )
+
+    await plant.fake.send(started(command))
+    await plant.fake.send(succeeded(command, result))
+    await plant.consume_until(run_id, "read", "FINALIZING")
+    await plant.finish()
+
+    run = await plant.api.run(run_id)
+    assert run["state"] == "FAILED"
+    assert reason in (await plant.node(run_id, "read"))["error"]
     assert await plant.state(run_id, "publish") == "SKIPPED"
     assert await plant.api.versions(UUID(run["outputs"]["result"]["dataset_id"])) == []
 

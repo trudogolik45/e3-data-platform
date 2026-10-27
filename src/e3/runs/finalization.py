@@ -11,7 +11,7 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from e3.shared.contracts import ExecutionResult
-from e3.shared.manifest import Manifest
+from e3.shared.manifest import Manifest, is_inside
 from e3.shared.storage import ObjectNotFound, ObjectStorage
 
 
@@ -30,13 +30,22 @@ async def verify_outputs(
         raise OutputRejected(
             f"ожидались выходы {sorted(expected_ports)}, пришли {sorted(result.outputs)}"
         )
-    prefix = storage.uri(execution_prefix(result.attempt_id)) + "/"
     manifests: dict[str, Manifest] = {}
     for port, uri in result.outputs.items():
-        if not uri.startswith(prefix):
+        key = _attempt_key(storage, uri, result.attempt_id)
+        if key is None:
             raise OutputRejected(f"{port}: manifest вне каталога попытки")
-        manifests[port] = await _verified_manifest(storage, storage.key(uri))
+        manifests[port] = await _verified_manifest(storage, key)
     return manifests
+
+
+def _attempt_key(storage: ObjectStorage, uri: str, attempt_id: UUID) -> str | None:
+    """Ключ `uri`, если он в каталоге попытки, иначе None."""
+    try:
+        key = storage.key(uri)
+    except ValueError:
+        return None
+    return key if is_inside(key, execution_prefix(attempt_id)) else None
 
 
 async def _verified_manifest(storage: ObjectStorage, key: str) -> Manifest:

@@ -2,10 +2,20 @@
 
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 DataFormat = Literal["CSV", "PARQUET"]
 ColumnType = Literal["string", "long", "double"]
+
+
+def is_relative_path(path: str) -> bool:
+    """Путь без `/` в начале, пустых сегментов, `.` и `..`: из своего каталога не выходит."""
+    return all(segment not in {"", ".", ".."} for segment in path.split("/"))
+
+
+def is_inside(key: str, directory: str) -> bool:
+    """Ключ хранилища лежит в `directory` по правилу `is_relative_path`."""
+    return key.startswith(f"{directory}/") and is_relative_path(key.removeprefix(f"{directory}/"))
 
 
 class Column(BaseModel):
@@ -27,6 +37,15 @@ class ManifestFile(BaseModel):
     path: str = Field(description="Путь относительно manifest.json")
     size_bytes: int = Field(ge=0)
     checksum_sha256: str = Field(description="SHA-256 в base64, как в S3 checksum")
+
+    @field_validator("path")
+    @classmethod
+    def stays_in_manifest_directory(cls, path: str) -> str:
+        if not is_relative_path(path):
+            raise ValueError(
+                f"{path!r}: путь должен быть относительным и не выходить из каталога manifest"
+            )
+        return path
 
 
 class Manifest(BaseModel):
