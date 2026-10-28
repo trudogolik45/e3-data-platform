@@ -1,15 +1,19 @@
+from typing import cast
 from uuid import uuid4
 
 import pytest
+from aiokafka import AIOKafkaProducer
 from pydantic import ValidationError
 
 from e3.execution.controller import ExecutionController
+from e3.execution.main import KafkaEvents
 from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import (
     CANCELLED_LABEL,
     COMMAND_ANNOTATION,
     FENCED_LABEL,
     GROUP,
+    TRACE_LABEL,
     VERSION,
     Pod,
     WorkloadConfig,
@@ -26,9 +30,11 @@ from e3.shared.messages import (
     cancel,
     parse_command,
     reconcile,
+    started,
 )
 from tests.fakes.attempt_credentials import ATTEMPT_KEYS, FixedCredentials, StsUnavailable
 from tests.fakes.spark_applications import InMemorySparkApplications
+from tests.logs import TraceLogs
 from tests.unit.conftest import UNIT_S3_SECRET
 
 IMAGE = "localhost:5001/e3-read@sha256:" + "a" * 64
@@ -64,6 +70,7 @@ def command(pod: PodSize | None = None) -> SubmitExecution:
         inputs={},
         parameters={},
         output_prefix=f"s3://e3-lake/staging/executions/{attempt_id}",
+        trace_id="run-1",
     )
     return SubmitExecution(
         node_run_id=node_run_id,
@@ -103,6 +110,40 @@ async def test_spark_application_runs_block_image_once_with_execution_context() 
     assert spec["image"] == IMAGE
     assert spec["restartPolicy"] == {"type": "Never"}
     assert ExecutionContext.model_validate_json(spec["arguments"][0]) == submit.payload.context
+
+
+async def test_spark_application_carries_trace_id_in_label_and_pods_env() -> None:
+    execution, applications, _, _ = controller()
+    submit = command()
+
+    await execution.submit(submit)
+
+    application = applications.items[name(submit)]
+    assert application["metadata"]["labels"][TRACE_LABEL] == "run-1"
+    for role in ("driver", "executor"):
+        pod = application["spec"][role]
+        assert pod["labels"][TRACE_LABEL] == "run-1"
+        assert {"name": "E3_TRACE_ID", "value": "run-1"} in pod["env"]
+
+
+async def test_command_handling_logs_carry_its_trace_id(trace_logs: TraceLogs) -> None:
+    execution, _, _, _ = controller()
+    submit = command()
+
+    await execution.handle(submit)
+
+    assert f"SubmitExecution попытки {submit.attempt_id} обработана" in trace_logs("run-1")
+
+
+async def test_reported_events_are_logged_with_attempt_trace_id(trace_logs: TraceLogs) -> None:
+    execution, applications, _, _ = controller()
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", "OOM")
+
+    await execution.report()
+
+    assert trace_logs("run-1") == [f"ExecutionFailed попытки {submit.attempt_id} отправлено"]
 
 
 async def test_attempt_keys_reach_spark_pods_through_secret_owned_by_its_application() -> None:
@@ -486,3 +527,21 @@ def test_controller_settings_hide_s3_keys_from_repr() -> None:
     settings = ExecutionSettings(_env_file=None)  # pyright: ignore[reportCallIssue]
 
     assert UNIT_S3_SECRET not in repr(settings)
+
+
+class RecordedProducer:
+    def __init__(self) -> None:
+        self.headers: list[list[tuple[str, bytes]]] = []
+
+    async def send_and_wait(
+        self, topic: str, value: bytes, *, key: bytes, headers: list[tuple[str, bytes]]
+    ) -> None:
+        self.headers.append(headers)
+
+
+async def test_event_goes_to_kafka_with_trace_id_header() -> None:
+    producer = RecordedProducer()
+
+    await KafkaEvents(cast("AIOKafkaProducer", producer)).send(started(command()))
+
+    assert producer.headers == [[("trace_id", b"run-1")]]

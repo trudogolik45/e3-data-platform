@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from e3.runs.finalization import execution_prefix
 from e3.runs.models import ExecutionAttemptRow, NodeRunRow, PipelineRunRow
 from e3.shared.storage import ObjectStorage
+from e3.shared.tracing import traced
 
 log = logging.getLogger(__name__)
 
@@ -59,16 +60,19 @@ class StagingRetention:
         return attempts
 
     async def _purge(self, run_id: UUID, attempts: list[UUID]) -> bool:
-        deleted = [await self._try_delete(attempt_id) for attempt_id in attempts]
-        if not all(deleted):
-            return False
-        async with self._sessions.begin() as session:
-            await session.execute(
-                update(PipelineRunRow)
-                .where(PipelineRunRow.id == run_id)
-                .values(staging_purged_at=func.now())
-            )
-        return True
+        """Логи очистки несут `trace_id` запуска."""
+        with traced(str(run_id)):
+            deleted = [await self._try_delete(attempt_id) for attempt_id in attempts]
+            if not all(deleted):
+                return False
+            async with self._sessions.begin() as session:
+                await session.execute(
+                    update(PipelineRunRow)
+                    .where(PipelineRunRow.id == run_id)
+                    .values(staging_purged_at=func.now())
+                )
+            log.info("staging PipelineRun %s удалён", run_id)
+            return True
 
     async def _try_delete(self, attempt_id: UUID) -> bool:
         """Сбой одной попытки не останавливает остальные: повторится следующим проходом."""

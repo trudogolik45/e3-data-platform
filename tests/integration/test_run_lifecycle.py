@@ -291,7 +291,9 @@ async def test_output_pointing_outside_attempt_fails_node_without_publication(
 
 
 class BrokerDown:
-    async def send(self, topic: str, *, key: bytes, value: bytes) -> None:
+    async def send(
+        self, topic: str, *, key: bytes, value: bytes, headers: list[tuple[str, bytes]]
+    ) -> None:
         raise ConnectionError("Kafka недоступна")
 
 
@@ -368,7 +370,9 @@ class ChecksOutboxIsFree:
         self._plant = plant
         self.resent_concurrently = 0
 
-    async def send(self, topic: str, *, key: bytes, value: bytes) -> None:
+    async def send(
+        self, topic: str, *, key: bytes, value: bytes, headers: list[tuple[str, bytes]]
+    ) -> None:
         engine = create_async_engine(self._plant.settings.database_url)
         try:
             async with engine.begin() as connection:

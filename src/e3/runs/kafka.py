@@ -48,8 +48,10 @@ class KafkaPublisher:
     def __init__(self, producer: AIOKafkaProducer) -> None:
         self._producer = producer
 
-    async def send(self, topic: str, *, key: bytes, value: bytes) -> None:
-        await self._producer.send_and_wait(topic, value, key=key)
+    async def send(
+        self, topic: str, *, key: bytes, value: bytes, headers: list[tuple[str, bytes]]
+    ) -> None:
+        await self._producer.send_and_wait(topic, value, key=key, headers=headers)
 
 
 @asynccontextmanager

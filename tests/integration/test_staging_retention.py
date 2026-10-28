@@ -17,6 +17,7 @@ from e3.shared.manifest import Manifest
 from e3.shared.messages import SubmitExecution
 from e3.shared.storage import ObjectStorage, StorageUnavailable
 from tests.integration.conftest import Plant, object_exists, read_object, storage_like
+from tests.logs import TraceLogs
 
 pytestmark = pytest.mark.integration
 
@@ -178,3 +179,21 @@ async def test_failed_attempt_purge_spares_others_and_is_retried(plant: Plant) -
     assert first == 0
     assert left[0] and not left[1]
     assert attempt_keys(plant, failed) == []
+
+
+async def test_purge_is_logged_with_trace_id_of_its_run(
+    plant: Plant, trace_logs: TraceLogs
+) -> None:
+    run_id, [failed, _] = await published_after_retry(plant)
+    await finished_ago(plant, run_id, RETENTION + timedelta(hours=1))
+    storage = storage_like(FailingOnce, plant.settings)
+    storage.broken = f"staging/executions/{failed.attempt_id}/"
+    orchestrator = create_app(plant.settings, storage=storage).state.runs
+
+    await orchestrator.purge_staging()
+    await orchestrator.purge_staging()
+
+    assert [m for m in trace_logs(run_id) if "staging" in m] == [
+        f"staging попытки {failed.attempt_id} не удалён, повторится",
+        f"staging PipelineRun {run_id} удалён",
+    ]

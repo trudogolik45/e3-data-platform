@@ -90,6 +90,8 @@ class ExecutionContext(BaseModel):
     inputs: dict[str, ResolvedInput]
     parameters: dict[str, Any]
     output_prefix: str
+    # `trace_id` PipelineRun для логов блока; в контекстах старого формата его нет.
+    trace_id: str | None = None
 
 
 class ExecutionResult(BaseModel):

@@ -208,7 +208,9 @@ class FakeExecutionController:
 
     async def send[E: ExecutionEvent](self, event: E) -> E:
         """Шлёт событие; повторный вызов с тем же событием — повторная доставка."""
-        await self._producer.send_and_wait(EVENTS_TOPIC, event.to_bytes(), key=event.key())
+        await self._producer.send_and_wait(
+            EVENTS_TOPIC, event.to_bytes(), key=event.key(), headers=event.headers()
+        )
         return event
 
     def _read_csv(self, source: ResolvedInput) -> dict[str, list[str]]:
