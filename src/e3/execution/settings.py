@@ -23,8 +23,9 @@ class ExecutionSettings(BaseSettings):
     # Срок жизни Attempt Credentials, без продления (ADR-0006); границы — у MinIO STS.
     attempt_credentials_seconds: int = Field(default=12 * 3600, ge=900, le=365 * 24 * 3600)
 
-    # S3 и STS глазами самого контроллера: читает ExecutionResult блока и выдаёт
-    # Attempt Credentials. Ключи — его собственного пользователя MinIO, не root.
+    # S3 и STS глазами самого контроллера: читает ExecutionResult блока, пишет
+    # Diagnostic Artifact и выдаёт Attempt Credentials. Ключи — его собственного
+    # пользователя MinIO, не root.
     s3_endpoint_url: str = "http://localhost:9000"
     # Без значений по умолчанию: забытые ключи не должны подменяться общеизвестными.
     s3_access_key: SecretStr

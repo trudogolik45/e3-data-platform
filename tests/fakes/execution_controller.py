@@ -141,9 +141,14 @@ class FakeExecutionController:
 
     def controller(self) -> ExecutionController:
         """Настоящий Execution Controller над `cluster`; новый вызов — рестарт Controller."""
-        results = StoredResults(ObjectStorage(self._s3, self._s3, self._bucket))
+        storage = ObjectStorage(self._s3, self._s3, self._bucket)
         return ExecutionController(
-            self.cluster, _Events(self), results, FixedCredentials(), WORKLOAD
+            self.cluster,
+            _Events(self),
+            StoredResults(storage),
+            FixedCredentials(),
+            storage,
+            WORKLOAD,
         )
 
     def run_spark(self, command: SubmitExecution) -> None:

@@ -29,7 +29,7 @@ from e3.settings import Settings
 from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
 from e3.shared.manifest import Manifest
 from e3.shared.messages import ExecutionEvent, parse_command
-from tests.e2e.cluster import attempt_secret, secret
+from tests.e2e.cluster import attempt_logs, attempt_secret, secret
 from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_filter_aggregate_graph
@@ -177,20 +177,24 @@ async def test_spark_publishes_typed_aggregates(finished: FinishedRun) -> None:
     ]
 
 
-async def test_value_that_does_not_cast_fails_read_once_with_column_and_type() -> None:
+async def test_value_that_does_not_cast_fails_read_once_with_column_type_and_logs() -> None:
     assert API_URL is not None
     async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
         api = await project_api(client)
         run_id = await _start(api, b"city,qty,price\nmsk,hello,10.0\n")
         await _follow(api, run_id)
         read = (await api.run_nodes(run_id))["read"]
+    [attempt] = read["attempts"]
+    logs = await attempt_logs(
+        read["node_run_id"], attempt["attempt_id"], "driver.log", "executor-1.log"
+    )
 
     assert read["state"] == "FAILED"
     assert read["error"].startswith("колонка qty: значения не приводятся к long (логи driver: ")
-    [attempt] = read["attempts"]
     assert f"/e3-{attempt['attempt_id']}, attempt_id {attempt['attempt_id']}" in read["error"]
     assert "hello" not in read["error"]
     assert (attempt["state"], attempt["reason"]) == ("FAILED", "BLOCK_FAILED")
+    assert logs["driver.log"] and logs["executor-1.log"]
 
 
 def _rows(dataset_id: str, version_id: str) -> list[tuple[Any, ...]]:
@@ -232,6 +236,24 @@ async def test_states_follow_same_chains_as_with_fake_controller(finished: Finis
     assert trace.nodes["publish"][-1] == "SUCCEEDED", trace
 
 
+async def test_each_succeeded_attempt_leaves_driver_and_executor_logs(
+    finished: FinishedRun,
+) -> None:
+    logs = {
+        block: await attempt_logs(
+            finished.nodes[block]["node_run_id"],
+            finished.nodes[block]["attempt_id"],
+            "driver.log",
+            "executor-1.log",
+        )
+        for block in BLOCKS
+    }
+
+    for block, files in logs.items():
+        assert "SparkContext" in files["driver.log"].decode(), block
+        assert files["executor-1.log"], block
+
+
 class _Unused:
     async def send(self, event: ExecutionEvent) -> None:
         raise AssertionError("повторная команда не шлёт событий")
@@ -241,6 +263,9 @@ class _Unused:
 
     async def fetch_error(self, context: ExecutionContext) -> ExecutionError | None:
         raise AssertionError("повторная команда не читает ошибку блока")
+
+    async def put(self, key: str, data: bytes, *, content_type: str) -> None:
+        raise AssertionError("повторная команда не пишет Diagnostic Artifact")
 
 
 async def test_each_attempt_ran_on_own_keys_owned_by_its_spark_application(
@@ -284,6 +309,7 @@ async def test_redelivered_submit_execution_leaves_single_spark_application(
             _Unused(),
             _Unused(),
             attempt_credentials(settings),
+            _Unused(),
             settings.workload(),
         )
 
