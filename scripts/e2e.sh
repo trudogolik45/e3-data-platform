@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # E2E на настоящем Spark (kind + Kubeflow Spark Operator): `Read → Filter →
-# Aggregate → Publish Dataset`, Attempt Fence и ретрай пропавшей попытки.
+# Aggregate → Publish Dataset`, Attempt Fence, ретрай пропавшей попытки, повторный
+# POST и рестарт каждого компонента посреди запуска.
 #
 # Поднимает kind с локальным OCI registry и Spark Operator, Control Plane через
 # docker compose, собирает и пушит образы блоков, регистрирует их digest через
 # `e3-register-block`, запускает `e3-execution-controller` и гоняет tests/e2e.
+# Тесты рестартов перезапускают сервисы compose и сам контроллер: его pid — в
+# $WORK/controller.pid, по нему же контроллер останавливается в конце.
 # В конце всё разбирает; E3_E2E_KEEP=1 оставляет стенд для отладки.
 #
 # Нужны Docker, helm и uv. kind (и kubectl, если его нет) скачиваются в .cache/bin.
@@ -21,10 +24,14 @@ CLUSTER=e3-e2e
 REGISTRY=e3-kind-registry
 REGISTRY_PORT=5001 # 5000 на macOS занят AirPlay
 BLOCKS=(read filter aggregate)
+CONTROLLER_STOP_SECONDS=30
 PLATFORM_TOKEN=dev-platform-token # E3_PLATFORM_TOKEN сервиса api в docker-compose.yml
 
 export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
 export COMPOSE_PROJECT_NAME=e3-e2e
+# Контроллер, перезапущенный тестом, пишет pid и лог сюда же.
+export E3_E2E_CONTROLLER_PID_FILE="$WORK/controller.pid"
+export E3_E2E_CONTROLLER_LOG="$WORK/controller.log"
 # Удалённую посреди запуска попытку reconciliation должна найти за секунды, а не минуты.
 export E3_RECONCILE_AFTER_SECONDS=15
 # Размер pod'а задаёт Control Plane: на 2 vCPU раннера CI целое ядро на driver
@@ -68,13 +75,10 @@ compose() {
 teardown() {
   local status=$?
   set +e # разбираем до конца, даже если что-то уже остановлено
-  if [[ -n "${CONTROLLER_PID:-}" ]]; then
-    kill "$CONTROLLER_PID" 2>/dev/null
-    wait "$CONTROLLER_PID" 2>/dev/null
-  fi
+  stop_controller
   if [[ $status -ne 0 ]]; then
     log "упало: логи controller и SparkApplication"
-    tail -n 50 "$WORK/controller.log" 2>/dev/null
+    tail -n 50 "$E3_E2E_CONTROLLER_LOG" 2>/dev/null
     kubectl get sparkapplications -o wide 2>/dev/null
     kubectl logs -l spark-role=driver --tail=50 2>/dev/null
     kubectl get pods -A -o wide 2>/dev/null
@@ -162,9 +166,25 @@ controller_env() {
 }
 
 start_controller() {
-  log "e3-execution-controller (лог: $WORK/controller.log)"
-  uv run --project "$ROOT" e3-execution-controller >"$WORK/controller.log" 2>&1 &
-  CONTROLLER_PID=$!
+  log "e3-execution-controller (лог: $E3_E2E_CONTROLLER_LOG)"
+  # Без обёртки `uv run`: pid в файле — сам контроллер, тест останавливает именно его.
+  "$ROOT/.venv/bin/e3-execution-controller" >"$E3_E2E_CONTROLLER_LOG" 2>&1 &
+  echo $! >"$E3_E2E_CONTROLLER_PID_FILE"
+}
+
+stop_controller() {
+  [[ -f "$E3_E2E_CONTROLLER_PID_FILE" ]] || return 0
+  local pid
+  pid=$(cat "$E3_E2E_CONTROLLER_PID_FILE")
+  kill "$pid" 2>/dev/null
+  # Контроллер, запущенный тестом, — не потомок скрипта: wait его не ждёт.
+  for _ in $(seq "$CONTROLLER_STOP_SECONDS"); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  kill -9 "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  rm -f "$E3_E2E_CONTROLLER_PID_FILE"
 }
 
 main() {
@@ -177,7 +197,7 @@ main() {
   for block in "${BLOCKS[@]}"; do register_block "$block"; done
   controller_env
   start_controller
-  log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence"
+  log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence, рестарты"
   E3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
 }
 

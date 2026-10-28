@@ -5,17 +5,12 @@ Execution Controller, регистрирует блоки `read`, `filter` и `a
 передаёт адрес API в `E3_E2E_API_URL`. Без этой переменной тесты пропускаются.
 """
 
-import asyncio
-import io
 import os
 from collections.abc import AsyncIterator
-from dataclasses import dataclass, field
-from typing import Any, cast
-from uuid import UUID, uuid4
+from dataclasses import dataclass
+from typing import Any
 
-import boto3
 import httpx
-import pyarrow.parquet as pq
 import pytest
 from kubernetes_asyncio import config as kube_config
 from kubernetes_asyncio.client import ApiClient, CoreV1Api, CustomObjectsApi
@@ -25,80 +20,39 @@ from e3.execution.kubernetes import KubernetesSparkApplications
 from e3.execution.main import attempt_credentials
 from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import ATTEMPT_LABEL, COMMAND_ANNOTATION, GROUP, PLURAL, VERSION
-from e3.settings import Settings
 from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
-from e3.shared.manifest import Manifest
 from e3.shared.messages import ExecutionEvent, parse_command
 from tests.e2e.cluster import attempt_logs, attempt_secret, secret
 from tests.e2e.identity import project_api
+from tests.e2e.scenario import (
+    AGGREGATES,
+    BLOCK_LASTING,
+    BLOCKS,
+    NODE_CHAIN,
+    PUBLISH_CHAIN,
+    RUN_CHAIN,
+    RUN_LASTING,
+    Nodes,
+    Trace,
+    follow,
+    follows,
+    published_version,
+    rows,
+    start,
+)
 from tests.integration.conftest import Api
-from tests.integration.graphs import read_filter_aggregate_graph
 
 API_URL = os.environ.get("E3_E2E_API_URL")
 
 pytestmark = pytest.mark.skipif(API_URL is None, reason="E2E запускает scripts/e2e.sh")
-
-CSV = b"city,qty,price\nmsk,5,10.0\nmsk,1,99.5\nspb,7,3.0\nmsk,3,2.0\nekb,2,1.0\n"
-PARAMETERS = {
-    "read": {"types": {"qty": "long", "price": "double"}},
-    "filter": {"conditions": [{"column": "qty", "op": "gt", "value": 1}]},
-    "aggregate": {
-        "group_by": ["city"],
-        "aggregations": [
-            {"column": "qty", "function": "sum", "as": "total_qty"},
-            {"column": "price", "function": "avg", "as": "avg_price"},
-        ],
-    },
-}
-BLOCKS = list(PARAMETERS)
-RUN_TIMEOUT_SECONDS = 600
-POLL_SECONDS = 1
-
-NODE_CHAIN = ["PENDING", "QUEUED", "RUNNING", "FINALIZING", "SUCCEEDED"]
-PUBLISH_CHAIN = ["PENDING", "RUNNING", "SUCCEEDED"]
-RUN_CHAIN = ["PENDING", "RUNNING", "SUCCEEDED"]
-# Состояния, которые длятся дольше опроса раз в POLL_SECONDS: QUEUED — пока
-# Spark Operator поднимает driver, RUNNING — пока идёт Spark. Остальные
-# (PENDING, FINALIZING, RUNNING у Publish Dataset) проходят за один цикл
-# Run Orchestrator, и опрос через REST их может не застать.
-BLOCK_LASTING = frozenset({"QUEUED", "RUNNING"})
-RUN_LASTING = frozenset({"RUNNING"})
-
-
-@dataclass
-class Trace:
-    """Наблюдённые смены состояний: каждое состояние — один раз, по порядку."""
-
-    run: list[str] = field(default_factory=list[str])
-    nodes: dict[str, list[str]] = field(default_factory=dict[str, list[str]])
-
-    def note(self, run: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> None:
-        _append(self.run, run["state"])
-        for node_id, node in nodes.items():
-            _append(self.nodes.setdefault(node_id, []), node["state"])
 
 
 @dataclass
 class FinishedRun:
     api: Api
     run: dict[str, Any]
-    nodes: dict[str, dict[str, Any]]
+    nodes: Nodes
     trace: Trace
-
-
-def _append(states: list[str], state: str) -> None:
-    if not states or states[-1] != state:
-        states.append(state)
-
-
-def follows(observed: list[str], chain: list[str], lasting: frozenset[str] = frozenset()) -> bool:
-    """`observed` идёт по `chain` вперёд и пропускает только мимолётные состояния.
-
-    Каждое состояние из `lasting` должно быть замечено.
-    """
-    remaining = iter(chain)
-    in_order = all(state in remaining for state in observed)
-    return in_order and lasting <= set(observed)
 
 
 @pytest.fixture(scope="module")
@@ -106,59 +60,16 @@ async def finished() -> AsyncIterator[FinishedRun]:
     assert API_URL is not None
     async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
         api = await project_api(client)
-        run_id = await _start(api)
-        trace = await _follow(api, run_id)
+        run_id = (await start(api)).run_id
+        trace = Trace()
+        await follow(api, run_id, trace)
         yield FinishedRun(api, await api.run(run_id), await api.run_nodes(run_id), trace)
-
-
-def _graph() -> dict[str, Any]:
-    graph = read_filter_aggregate_graph(*BLOCKS)
-    for node in graph["nodes"]:
-        if node["kind"] == "BLOCK":
-            node["parameters"] = PARAMETERS[node["id"]]
-    return graph
-
-
-async def _start(api: Api, csv: bytes = CSV) -> str:
-    pipeline_id = await api.new_pipeline(f"read-filter-aggregate-on-spark-{uuid4()}")
-    assert (await api.save_draft(pipeline_id, _graph())).status_code == 200
-    published = await api.publish(pipeline_id)
-    assert published.status_code == 201, published.text
-    source = await api.new_dataset(f"source-{uuid4()}")
-    uploaded = await api.upload_csv(source, csv)
-    assert uploaded.status_code == 200, uploaded.text
-    target = await api.new_dataset(f"result-{uuid4()}")
-    body = {
-        "pipeline_id": str(pipeline_id),
-        "pipeline_version": published.json()["version_number"],
-        "inputs": {
-            "source": {
-                "dataset_id": str(source),
-                "version_id": uploaded.json()["version"]["version_id"],
-            }
-        },
-        "outputs": {"result": {"dataset_id": str(target)}},
-    }
-    started = await api.start_run(body, key=str(uuid4()))
-    assert started.status_code == 202, started.text
-    return started.json()["pipeline_run_id"]
-
-
-async def _follow(api: Api, run_id: str) -> Trace:
-    trace = Trace()
-    async with asyncio.timeout(RUN_TIMEOUT_SECONDS):
-        while True:
-            run = await api.run(run_id)
-            trace.note(run, await api.run_nodes(run_id))
-            if run["state"] in {"SUCCEEDED", "FAILED"}:
-                return trace
-            await asyncio.sleep(POLL_SECONDS)
 
 
 async def test_spark_publishes_typed_aggregates(finished: FinishedRun) -> None:
     target = finished.run["outputs"]["result"]["dataset_id"]
 
-    [version] = await finished.api.versions(UUID(target))
+    version = await published_version(finished.api, finished.run)
 
     assert finished.run["state"] == "SUCCEEDED", finished.nodes
     assert version["format"] == "PARQUET"
@@ -170,19 +81,15 @@ async def test_spark_publishes_typed_aggregates(finished: FinishedRun) -> None:
         ]
     }
     assert version["version_id"] == finished.nodes["publish"]["published_version_id"]
-    assert _rows(target, str(version["version_id"])) == [
-        ("ekb", 2, 1.0),
-        ("msk", 8, 6.0),
-        ("spb", 7, 3.0),
-    ]
+    assert rows(target, str(version["version_id"])) == AGGREGATES
 
 
 async def test_value_that_does_not_cast_fails_read_once_with_column_type_and_logs() -> None:
     assert API_URL is not None
     async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
         api = await project_api(client)
-        run_id = await _start(api, b"city,qty,price\nmsk,hello,10.0\n")
-        await _follow(api, run_id)
+        run_id = (await start(api, b"city,qty,price\nmsk,hello,10.0\n")).run_id
+        await follow(api, run_id, Trace())
         read = (await api.run_nodes(run_id))["read"]
     [attempt] = read["attempts"]
     logs = await attempt_logs(
@@ -195,34 +102,6 @@ async def test_value_that_does_not_cast_fails_read_once_with_column_type_and_log
     assert "hello" not in read["error"]
     assert (attempt["state"], attempt["reason"]) == ("FAILED", "BLOCK_FAILED")
     assert logs["driver.log"] and logs["executor-1.log"]
-
-
-def _rows(dataset_id: str, version_id: str) -> list[tuple[Any, ...]]:
-    """Строки опубликованной версии прямо из MinIO стенда."""
-    settings = Settings(environment="dev")  # pyright: ignore[reportCallIssue]
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=settings.s3_endpoint_url,
-        aws_access_key_id=settings.s3_access_key.get_secret_value(),
-        aws_secret_access_key=settings.s3_secret_key.get_secret_value(),
-        region_name=settings.s3_region,
-    )
-    prefix = f"datasets/{dataset_id}/{version_id}"
-
-    def read(key: str) -> bytes:
-        return s3.get_object(Bucket=settings.s3_bucket, Key=key)["Body"].read()
-
-    manifest = Manifest.model_validate_json(read(f"{prefix}/manifest.json"))
-    rows: list[tuple[Any, ...]] = []
-    for file in manifest.files:
-        rows += _parquet_rows(read(f"{prefix}/{file.path}"))
-    return sorted(rows)
-
-
-def _parquet_rows(data: bytes) -> list[tuple[Any, ...]]:
-    # У pyarrow нет типов для pyright.
-    table: Any = pq.read_table(io.BytesIO(data))  # pyright: ignore[reportUnknownVariableType]
-    return [tuple(row.values()) for row in cast("list[dict[str, Any]]", table.to_pylist())]
 
 
 async def test_states_follow_same_chains_as_with_fake_controller(finished: FinishedRun) -> None:
