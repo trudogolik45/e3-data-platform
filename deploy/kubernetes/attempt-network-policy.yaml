@@ -12,6 +12,10 @@
 #                                        kubernetes`) списком `{ ipBlock: { cidr: "<ip>/32" } }` через
 #                                        запятую: политика видит адрес уже после DNAT сервиса `kubernetes`.
 # Execution Controller её не создаёт. В E2E её применяет scripts/e2e.sh.
+#
+# Ограничение: CNI применяет политику к новому pod'у с задержкой (на kindnet — около
+# секунды), и в это окно его соединения проходят. Код блока запускается позже, после
+# JVM и SparkContext.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

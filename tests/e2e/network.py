@@ -27,6 +27,9 @@ from e3.execution.workload import ATTEMPT_LABEL
 
 PROBE_IMAGE = os.environ.get("E3_E2E_PROBE_IMAGE", "busybox:1.37")
 CONNECT_SECONDS = 5
+# kindnet применяет NetworkPolicy к новому pod'у не сразу: первые ~секунду его
+# соединения проходят. Код блока стартует позже — после JVM и SparkContext.
+POLICY_SETTLE_SECONDS = 5
 POD_TIMEOUT_SECONDS = 120
 LISTENER_PORT = 8080
 FINISHED = {"Succeeded", "Failed"}
@@ -72,9 +75,11 @@ async def ensure_namespace(name: str) -> None:
 
 
 async def _succeeds(command: list[str], *, namespace: str, labels: dict[str, str]) -> bool:
+    """Проба ждёт `POLICY_SETTLE_SECONDS`: проверяется политика нового pod'а, а не окно до неё."""
     name = f"e3-probe-{uuid4().hex[:8]}"
+    settled = ["sh", "-c", f'sleep {POLICY_SETTLE_SECONDS} && exec "$@"', "probe", *command]
     async with _core() as core:
-        await core.create_namespaced_pod(namespace, _pod(name, command, labels))
+        await core.create_namespaced_pod(namespace, _pod(name, settled, labels))
         try:
             return await _finished_phase(core, name, namespace) == "Succeeded"
         finally:
