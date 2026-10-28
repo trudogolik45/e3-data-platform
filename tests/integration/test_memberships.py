@@ -88,15 +88,15 @@ async def test_admin_adds_changes_and_removes_member(identity: IdentityService) 
     admin, member = await signed_in(identity), await signed_in(identity)
     project = await new_project(identity, admin)
 
-    await identity.add_member(project, member, Role.VIEWER)
-    await identity.change_role(project, member, Role.EDITOR)
+    await identity.add_member(project, member, Role.VIEWER, by=admin)
+    await identity.change_role(project, member, Role.EDITOR, by=admin)
     assert await identity.role_of(member, project) == Role.EDITOR
     assert {m.user_id: m.role for m in await identity.members(project)} == {
         admin: Role.ADMIN,
         member: Role.EDITOR,
     }
 
-    await identity.remove_member(project, member)
+    await identity.remove_member(project, member, by=admin)
 
     assert await identity.role_of(member, project) is None
 
@@ -104,19 +104,20 @@ async def test_admin_adds_changes_and_removes_member(identity: IdentityService) 
 async def test_member_cannot_be_added_twice(identity: IdentityService) -> None:
     admin, member = await signed_in(identity), await signed_in(identity)
     project = await new_project(identity, admin)
-    await identity.add_member(project, member, Role.VIEWER)
+    await identity.add_member(project, member, Role.VIEWER, by=admin)
 
     with pytest.raises(MemberExists):
-        await identity.add_member(project, member, Role.EDITOR)
+        await identity.add_member(project, member, Role.EDITOR, by=admin)
 
 
 async def test_unknown_member_cannot_be_changed_or_removed(identity: IdentityService) -> None:
-    project = await new_project(identity, await signed_in(identity))
+    admin = await signed_in(identity)
+    project = await new_project(identity, admin)
 
     with pytest.raises(MemberNotFound):
-        await identity.change_role(project, uuid4(), Role.VIEWER)
+        await identity.change_role(project, uuid4(), Role.VIEWER, by=admin)
     with pytest.raises(MemberNotFound):
-        await identity.remove_member(project, uuid4())
+        await identity.remove_member(project, uuid4(), by=admin)
 
 
 async def test_last_admin_cannot_be_demoted_or_removed(identity: IdentityService) -> None:
@@ -124,20 +125,20 @@ async def test_last_admin_cannot_be_demoted_or_removed(identity: IdentityService
     project = await new_project(identity, admin)
 
     with pytest.raises(LastAdmin):
-        await identity.change_role(project, admin, Role.EDITOR)
+        await identity.change_role(project, admin, Role.EDITOR, by=admin)
     with pytest.raises(LastAdmin):
-        await identity.remove_member(project, admin)
+        await identity.remove_member(project, admin, by=admin)
     assert await identity.role_of(admin, project) == Role.ADMIN
 
 
 async def test_parallel_demotions_keep_one_admin(identity: IdentityService) -> None:
     first, second = await signed_in(identity), await signed_in(identity)
     project = await new_project(identity, first)
-    await identity.add_member(project, second, Role.ADMIN)
+    await identity.add_member(project, second, Role.ADMIN, by=first)
 
     results = await asyncio.gather(
-        identity.change_role(project, first, Role.VIEWER),
-        identity.change_role(project, second, Role.VIEWER),
+        identity.change_role(project, first, Role.VIEWER, by=first),
+        identity.change_role(project, second, Role.VIEWER, by=first),
         return_exceptions=True,
     )
 
@@ -175,7 +176,7 @@ async def test_unverified_email_is_not_kept(identity: IdentityService) -> None:
     admin = await signed_in(identity)
     project = await new_project(identity, admin)
     stranger = await signed_in(identity, email=f"{uuid4().hex}@e3.test", verified=False)
-    await identity.add_member(project, stranger, Role.VIEWER)
+    await identity.add_member(project, stranger, Role.VIEWER, by=admin)
 
     member = await identity.member(project, stranger)
 
