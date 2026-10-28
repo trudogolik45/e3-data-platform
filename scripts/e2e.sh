@@ -169,8 +169,6 @@ apply_network_policy() {
   sed -e "s|@S3_CIDR@|$MINIO_IN_KIND/32|" -e "s|@S3_PORT@|9000|" \
     -e "s|@KUBE_API_CIDR@|$api_ip/32|" -e "s|@KUBE_API_PORT@|$api_port|" \
     "$ROOT/$NETWORK_POLICY" | kubectl apply -n default -f -
-  docker pull -q "$E3_E2E_PROBE_IMAGE" >/dev/null
-  kind load docker-image "$E3_E2E_PROBE_IMAGE" --name "$CLUSTER"
 }
 
 register_block() {
