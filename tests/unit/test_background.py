@@ -29,6 +29,9 @@ class IdleOrchestrator:
     async def purge_staging(self) -> int:
         return 0
 
+    async def purge_artifacts(self) -> int:
+        return 0
+
     def outbox_relay(self, publisher: object) -> "IdleOrchestrator":
         return self
 

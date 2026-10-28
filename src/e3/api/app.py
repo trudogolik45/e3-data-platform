@@ -52,6 +52,7 @@ def create_app(
         pod=settings.pod_size(),
         quota=project_quota(settings),
         staging_retention=timedelta(days=settings.staging_retention_days),
+        artifact_retention=timedelta(days=settings.artifact_retention_days),
     )
     app.state.platform_token = settings.platform_token
     app.include_router(identity.router)

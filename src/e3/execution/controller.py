@@ -37,7 +37,12 @@ from e3.execution.workload import (
     spark_application,
     workload_name,
 )
-from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
+from e3.shared.contracts import (
+    ExecutionContext,
+    ExecutionError,
+    ExecutionResult,
+    diagnostic_artifact_prefix,
+)
 from e3.shared.messages import (
     CancelExecution,
     Command,
@@ -67,7 +72,6 @@ FAILURE_REASONS: dict[str, FailureReason] = {
     "SUBMISSION_FAILED": "SUBMISSION_FAILED",
 }
 TERMINAL_STATES = {COMPLETED, *FAILURE_REASONS}
-ARTIFACTS_PREFIX = "artifacts"
 LOG_CONTENT_TYPE = "text/plain; charset=utf-8"
 # Фазы pod'а, в которых он точно не работает; `Unknown` ничего не доказывает.
 FINISHED_PHASES = {"Succeeded", "Failed"}
@@ -318,7 +322,8 @@ class ExecutionController:
 
 def diagnostic_artifact_key(command: SubmitExecution, pod_log: PodLog) -> str:
     """Ключ выводится из попытки и pod'а: повторное сохранение перезаписывает тот же объект."""
-    return f"{ARTIFACTS_PREFIX}/{command.node_run_id}/{command.attempt_id}/{pod_log.name}.log"
+    prefix = diagnostic_artifact_prefix(command.node_run_id, command.attempt_id)
+    return f"{prefix}/{pod_log.name}.log"
 
 
 def _command(application: dict[str, Any]) -> SubmitExecution:

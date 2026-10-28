@@ -35,9 +35,10 @@ class Settings(BaseSettings):
     runs_idle_seconds: float = Field(default=0.5, gt=0)
     # Сколько попытка может молчать, прежде чем Run Orchestrator спросит о ней Controller.
     reconcile_after_seconds: int = Field(default=600, gt=0)
-    # Сколько хранится staging попыток после завершения PipelineRun (PRD §8)
-    # и как часто фоновая очистка его ищет.
+    # Сколько хранятся staging попыток и их Diagnostic Artifact после завершения
+    # PipelineRun (PRD §8, ADR-0002) и как часто фоновая очистка их ищет.
     staging_retention_days: float = Field(default=7, gt=0)
+    artifact_retention_days: float = Field(default=30, gt=0)
     staging_purge_period_seconds: float = Field(default=3600, gt=0)
 
     # Размер pod'а попытки, driver и executor одинаковы: CPU-запрос в нотации Kubernetes

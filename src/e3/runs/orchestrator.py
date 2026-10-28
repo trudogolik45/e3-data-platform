@@ -18,7 +18,8 @@
 - `reconcile_pending` просит Execution Controller проверить попытки, о которых
   давно нет событий. Молчание — не смерть: `LOST` ставит только доказательство
   от Controller;
-- `purge_staging` удаляет staging попыток запусков, завершённых раньше срока хранения.
+- `purge_staging` и `purge_artifacts` удаляют staging и Diagnostic Artifact попыток
+  запусков, завершённых раньше своего срока хранения.
 
 Работа с S3 идёт вне транзакций. Незавершённый шаг виден по состоянию NodeRun,
 поэтому следующий проход его повторит; повтор безопасен.
@@ -63,7 +64,7 @@ from e3.runs.nodes import NodeKind, build_node_runs, node_inputs, progress
 from e3.runs.outbox import OutboxRelay, Publisher, enqueue, first_delivery, unsent
 from e3.runs.progress import NodeState, RunState, plan
 from e3.runs.quota import ProjectQuota
-from e3.runs.retention import StagingRetention
+from e3.runs.retention import Retention, artifacts_rule, staging_rule
 from e3.shared.contracts import (
     BlockSpec,
     DataRef,
@@ -188,6 +189,7 @@ class RunOrchestrator:
         pod: PodSize,
         quota: ProjectQuota,
         staging_retention: timedelta,
+        artifact_retention: timedelta,
     ) -> None:
         self._sessions = sessions
         self._datasets = datasets
@@ -198,7 +200,8 @@ class RunOrchestrator:
         self._reconcile_after = reconcile_after
         self._pod = pod
         self._quota = quota
-        self._staging = StagingRetention(sessions, storage, retention=staging_retention)
+        self._staging = Retention(sessions, storage, staging_rule(staging_retention))
+        self._artifacts = Retention(sessions, storage, artifacts_rule(artifact_retention))
 
     async def start(
         self, principal: Principal, request: RunRequest, *, idempotency_key: str
@@ -464,6 +467,10 @@ class RunOrchestrator:
     async def purge_staging(self) -> int:
         """Возвращает число запусков, staging которых удалён целиком."""
         return await self._staging.purge_expired()
+
+    async def purge_artifacts(self) -> int:
+        """Возвращает число запусков, Diagnostic Artifact которых удалены целиком."""
+        return await self._artifacts.purge_expired()
 
     async def _quiet_attempts(
         self, session: AsyncSession
