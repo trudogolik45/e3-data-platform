@@ -125,6 +125,7 @@ class Uploads:
         return StartedUpload(upload_id, UploadState.PENDING, presigned)
 
     async def complete(self, dataset_id: UUID, upload_id: UUID, *, by: UUID) -> UploadStatus:
+        """Проверяет загруженный файл; новая DatasetVersion — Audit Event от имени `by`."""
         claim = await self._claim(dataset_id, upload_id)
         if isinstance(claim, UploadStatus):
             return claim

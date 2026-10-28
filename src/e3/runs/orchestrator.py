@@ -371,7 +371,10 @@ class RunOrchestrator:
             return 0
 
     async def cancel(self, pipeline_run_id: UUID, *, by: UUID) -> PipelineRun:
-        """Запрашивает отмену; повтор и отмена во время Fail-fast ничего не меняют."""
+        """Запрашивает отмену от имени `by`; запрос оставляет Audit Event.
+
+        Повтор и отмена во время Fail-fast запуск не меняют, но запрос всё равно записан.
+        """
         async with self._sessions.begin() as session:
             run = await session.get(PipelineRunRow, pipeline_run_id, with_for_update=True)
             if run is None:

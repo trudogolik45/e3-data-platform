@@ -9,6 +9,7 @@ from e3.settings import Settings
 from e3.shared.contracts import NodeOutputRef
 from tests.fakes.execution_controller import write_parquet_output
 from tests.integration.conftest import Api, read_object
+from tests.integration.test_audit_events import audit_events
 
 pytestmark = pytest.mark.integration
 
@@ -73,6 +74,7 @@ async def test_republishing_same_node_output_returns_existing_version(
 
     assert first == second
     assert len(await api.versions(dataset_id)) == 1
+    assert len(await audit_events(settings, "dataset.publish", first.version_id)) == 1
 
 
 async def test_publication_into_foreign_project_is_rejected(

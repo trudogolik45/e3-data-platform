@@ -179,6 +179,22 @@ async def test_viewer_starting_run_is_denied_and_audited(
     assert events == [denied_to(viewer, project_id)]
 
 
+async def test_outsider_starting_run_is_denied_and_audited(
+    world: World, oidc_settings: Settings
+) -> None:
+    admin, outsider = await world.user(), await world.user()
+    project_id = await world.project(admin)
+    request = await run_request(await world.api(admin, project_id))
+
+    denied = await (await world.api(outsider, project_id)).start_run(request, key=str(uuid4()))
+
+    assert denied.status_code == 403, denied.text
+    events = await audit_events(
+        oidc_settings, "pipeline_run.create", request["pipeline_id"], project_id=project_id
+    )
+    assert events == [denied_to(outsider, project_id)]
+
+
 async def test_each_denied_cancel_by_outsider_is_audited(
     world: World, oidc_settings: Settings
 ) -> None:
