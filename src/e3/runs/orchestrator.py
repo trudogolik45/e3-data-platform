@@ -17,7 +17,8 @@
 - `publish_pending` выполняет Publish Dataset через Dataset Catalog;
 - `reconcile_pending` просит Execution Controller проверить попытки, о которых
   давно нет событий. Молчание — не смерть: `LOST` ставит только доказательство
-  от Controller.
+  от Controller;
+- `purge_staging` удаляет staging попыток запусков, завершённых раньше срока хранения.
 
 Работа с S3 идёт вне транзакций. Незавершённый шаг виден по состоянию NodeRun,
 поэтому следующий проход его повторит; повтор безопасен.
@@ -62,6 +63,7 @@ from e3.runs.nodes import NodeKind, build_node_runs, node_inputs, progress
 from e3.runs.outbox import OutboxRelay, Publisher, enqueue, first_delivery, unsent
 from e3.runs.progress import NodeState, RunState, plan
 from e3.runs.quota import ProjectQuota
+from e3.runs.retention import StagingRetention
 from e3.shared.contracts import (
     BlockSpec,
     DataRef,
@@ -102,6 +104,8 @@ AWAITING_OUTCOME = frozenset({NodeState.QUEUED, NodeState.RUNNING})
 OPEN_ATTEMPT = AWAITING_OUTCOME | {NodeState.CANCELLING}
 # Запуск закончился: отменять нечего.
 FINISHED = frozenset({RunState.SUCCEEDED, RunState.FAILED})
+# Итог запуска: дальше состояние не меняется.
+TERMINAL_RUNS = FINISHED | {RunState.CANCELLED}
 # Терминальная причина Publish Dataset без ретрая: дальше Fail-fast.
 ACCESS_REVOKED = "access_revoked: у Initiator нет Role Editor в Project целевого Dataset"
 
@@ -128,6 +132,7 @@ class PipelineRun:
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
     created_at: datetime
+    finished_at: datetime | None
     initiated_by_user_id: UUID
     failed_node_run_id: UUID | None
 
@@ -181,6 +186,7 @@ class RunOrchestrator:
         reconcile_after: timedelta,
         pod: PodSize,
         quota: ProjectQuota,
+        staging_retention: timedelta,
     ) -> None:
         self._sessions = sessions
         self._datasets = datasets
@@ -191,6 +197,7 @@ class RunOrchestrator:
         self._reconcile_after = reconcile_after
         self._pod = pod
         self._quota = quota
+        self._staging = StagingRetention(sessions, storage, retention=staging_retention)
 
     async def start(
         self, principal: Principal, request: RunRequest, *, idempotency_key: str
@@ -442,6 +449,10 @@ class RunOrchestrator:
                 _request_check(session, attempt, node_state)
             return len(due)
 
+    async def purge_staging(self) -> int:
+        """Возвращает число запусков, staging которых удалён целиком."""
+        return await self._staging.purge_expired()
+
     async def _quiet_attempts(
         self, session: AsyncSession
     ) -> list[tuple[ExecutionAttemptRow, NodeState]]:
@@ -542,6 +553,9 @@ class RunOrchestrator:
         run.state = decision.run_state
         if run.failed_node_run_id is None:
             run.failed_node_run_id = _first_failed(nodes)
+        if run.state in TERMINAL_RUNS and run.finished_at is None:
+            # Время транзакции, как у `func.now()`, но значением: его сразу отдаёт `_to_run`.
+            run.finished_at = await session.scalar(select(func.now()))
 
     async def _submit_attempt(
         self, session: AsyncSession, run: PipelineRunRow, node: NodeRunRow
@@ -1036,6 +1050,7 @@ def _to_run(row: PipelineRunRow) -> PipelineRun:
         inputs={slot: InputBinding.model_validate(b) for slot, b in row.inputs.items()},
         outputs={slot: OutputBinding.model_validate(b) for slot, b in row.outputs.items()},
         created_at=row.created_at,
+        finished_at=row.finished_at,
         initiated_by_user_id=row.initiated_by_user_id,
         failed_node_run_id=row.failed_node_run_id,
     )

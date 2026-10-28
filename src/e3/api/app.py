@@ -51,6 +51,7 @@ def create_app(
         reconcile_after=timedelta(seconds=settings.reconcile_after_seconds),
         pod=settings.pod_size(),
         quota=project_quota(settings),
+        staging_retention=timedelta(days=settings.staging_retention_days),
     )
     app.state.platform_token = settings.platform_token
     app.include_router(identity.router)
@@ -69,6 +70,7 @@ def _run_orchestrator_in_background(settings: Settings):
             bootstrap_servers=settings.kafka_bootstrap_servers,
             group_id=settings.kafka_group_id,
             idle_seconds=settings.runs_idle_seconds,
+            purge_seconds=settings.staging_purge_period_seconds,
         ):
             yield
 

@@ -108,6 +108,31 @@ class ObjectStorage:
     async def delete(self, key: str) -> None:
         await self._call(lambda: self._client.delete_object(Bucket=self._bucket, Key=key))
 
+    async def delete_prefix(self, prefix: str) -> int:
+        """Удаляет все объекты под `prefix`; возвращает их число. Пустой префикс — 0."""
+        deleted = 0
+        while keys := await self._list(prefix):
+            await self._delete_many(keys)
+            deleted += len(keys)
+        return deleted
+
+    async def _list(self, prefix: str) -> list[str]:
+        """Первая страница ключей под `prefix`: до 1000, как и в одном DeleteObjects."""
+        response = await self._call(
+            lambda: self._client.list_objects_v2(Bucket=self._bucket, Prefix=prefix)
+        )
+        return [item["Key"] for item in response.get("Contents", []) if "Key" in item]
+
+    async def _delete_many(self, keys: list[str]) -> None:
+        response = await self._call(
+            lambda: self._client.delete_objects(
+                Bucket=self._bucket,
+                Delete={"Objects": [{"Key": key} for key in keys], "Quiet": True},
+            )
+        )
+        if errors := response.get("Errors"):
+            raise StorageUnavailable(f"не удалено {len(errors)} объектов: {errors[0]}")
+
     async def _call[T](self, operation: Callable[[], T]) -> T:
         try:
             return await asyncio.to_thread(operation)

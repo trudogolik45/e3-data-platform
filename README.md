@@ -48,6 +48,7 @@ flowchart LR
 - Отмена запусков и доступ по ролям проекта через OIDC.
 - Лимиты Project: 5 активных запусков и квота CPU и RAM на попытки (`E3_PROJECT_QUOTA_CPU_MILLICORES`, `E3_PROJECT_QUOTA_MEMORY_MIB`; по умолчанию — 10 попыток). Размер попытки — `E3_SPARK_CORE_REQUEST` и `E3_SPARK_MEMORY_MIB` Control Plane.
 - Свои S3-ключи у каждой попытки (Attempt Credentials): MinIO STS, чтение только её входов, запись только в её `staging/executions/{attempt_id}/`. Срок жизни — `E3_ATTEMPT_CREDENTIALS_SECONDS` Execution Controller (по умолчанию 12 ч). Сам контроллер ходит в MinIO пользователем `e3-execution-controller` с узкой политикой `scripts/minio/execution-controller-policy.json`, а не root.
+- Очистка staging: данные попыток удаляются через 7 суток после завершения запуска (`E3_STAGING_RETENTION_DAYS`); опубликованные версии и загрузки не трогаются.
 - CI на каждый PR и e2e-прогон на kind на каждый push в `main`.
 
 Дальше по плану: сетевая изоляция workload'ов, сквозная трассировка, затем Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).

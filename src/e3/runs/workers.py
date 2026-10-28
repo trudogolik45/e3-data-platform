@@ -1,9 +1,9 @@
 """Фоновые циклы Run Orchestrator в процессе Control Plane.
 
 Каждый цикл повторяется независимо: пока есть работа — сразу, без работы или
-после сбоя — после паузы. Сбой пишется в лог и не останавливает остальные
-циклы. Сбой Kafka пересоздаёт связь с ней, а недоступная Kafka не мешает API
-принимать запуски.
+после сбоя — после паузы; у очистки staging пауза своя, долгая. Сбой пишется
+в лог и не останавливает остальные циклы. Сбой Kafka пересоздаёт связь с ней,
+а недоступная Kafka не мешает API принимать запуски.
 """
 
 import asyncio
@@ -25,7 +25,12 @@ KAFKA_RETRY_SECONDS = 5
 
 @asynccontextmanager
 async def background(
-    orchestrator: RunOrchestrator, *, bootstrap_servers: str, group_id: str, idle_seconds: float
+    orchestrator: RunOrchestrator,
+    *,
+    bootstrap_servers: str,
+    group_id: str,
+    idle_seconds: float,
+    purge_seconds: float,
 ) -> AsyncGenerator[None]:
     """Циклы по PostgreSQL и S3 идут всегда; циклы через Kafka — пока она доступна."""
     loops = [
@@ -33,6 +38,7 @@ async def background(
         _repeat(orchestrator.finalize_pending, idle_seconds),
         _repeat(orchestrator.publish_pending, idle_seconds),
         _repeat(orchestrator.reconcile_pending, idle_seconds),
+        _repeat(orchestrator.purge_staging, purge_seconds),
         _with_kafka(orchestrator, bootstrap_servers, group_id, idle_seconds),
     ]
     tasks = [asyncio.create_task(loop) for loop in loops]

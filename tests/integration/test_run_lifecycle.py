@@ -9,6 +9,7 @@ Aggregate → Publish Dataset`.
 
 import json
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 from uuid import UUID
 
@@ -154,6 +155,38 @@ async def test_redelivered_succeeded_creates_no_second_output_or_version(plant: 
     assert len(await plant.api.versions(UUID(target))) == 1
     assert len((await plant.node(run_id, "read"))["outputs"]) == 1
     assert (await plant.api.run(run_id))["state"] == "SUCCEEDED"
+
+
+async def test_run_gets_finished_at_only_on_reaching_terminal_state(plant: Plant) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    await plant.fake.succeed(command)
+    await plant.consume_until(run_id, "read", "FINALIZING")
+    await plant.orchestrator.finalize_pending()
+    assert (await plant.api.run(run_id))["finished_at"] is None
+
+    await plant.orchestrator.publish_pending()
+
+    run = await plant.api.run(run_id)
+    assert run["state"] == "SUCCEEDED"
+    assert datetime.fromisoformat(run["finished_at"]) >= datetime.fromisoformat(run["created_at"])
+
+
+async def test_repeated_event_after_finish_keeps_finished_at(plant: Plant) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    await plant.fake.fail(command, "нет результата", "NO_RESULT")
+    await plant.consume_until(run_id, "read", "FAILED")
+    finished = await plant.api.run(run_id)
+
+    await plant.fake.fail(command, "повтор", "NO_RESULT")
+    await plant.fake.send(succeeded(command, plant.fake.execute(command)))
+    await plant.events.poll(timeout_ms=1000)
+    await plant.finish()
+
+    run = await plant.api.run(run_id)
+    assert finished["state"] == "FAILED"
+    assert run["finished_at"] == finished["finished_at"] is not None
 
 
 async def test_inbox_drops_event_already_received_even_if_state_accepts_it(
