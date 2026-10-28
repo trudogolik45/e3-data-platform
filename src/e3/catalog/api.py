@@ -9,6 +9,7 @@ from uuid import UUID
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+from e3 import audit
 from e3.catalog.catalog import Catalog
 from e3.catalog.datasets import Dataset, DatasetNameTaken, DatasetNotFound
 from e3.catalog.uploads import FileNotUploaded, UploadNotFound, UploadState, UploadStatus
@@ -96,6 +97,7 @@ def get_catalog(request: Request) -> Catalog:
 
 CatalogDep = Annotated[Catalog, Depends(get_catalog)]
 PrincipalDep = Annotated[Principal, Depends(current_principal)]
+AuditLogDep = Annotated[audit.AuditLog, Depends(audit.audit_log)]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -120,9 +122,13 @@ async def archive_dataset(
 
 @router.post("/{dataset_id}/uploads", status_code=status.HTTP_201_CREATED)
 async def start_upload(
-    dataset_id: UUID, body: StartUploadIn, catalog: CatalogDep, principal: PrincipalDep
+    dataset_id: UUID,
+    body: StartUploadIn,
+    catalog: CatalogDep,
+    principal: PrincipalDep,
+    log: AuditLogDep,
 ) -> StartUploadOut:
-    await _uploadable_dataset(catalog, principal, dataset_id)
+    await _uploadable_dataset(catalog, principal, dataset_id, log)
     started = await catalog.start_upload(dataset_id, checksum_sha256=body.checksum_sha256)
     return StartUploadOut(
         upload_id=started.upload_id,
@@ -138,12 +144,13 @@ async def complete_upload(
     upload_id: UUID,
     catalog: CatalogDep,
     principal: PrincipalDep,
+    log: AuditLogDep,
     response: Response,
     background: BackgroundTasks,
 ) -> UploadStatusOut:
-    await _uploadable_dataset(catalog, principal, dataset_id)
+    await _uploadable_dataset(catalog, principal, dataset_id, log)
     try:
-        upload = await catalog.complete_upload(dataset_id, upload_id)
+        upload = await catalog.complete_upload(dataset_id, upload_id, by=principal.user_id)
     except UploadNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload не найден") from None
     except FileNotUploaded:
@@ -169,16 +176,33 @@ async def list_versions(
 async def _accessible_dataset(
     catalog: Catalog, principal: Principal, dataset_id: UUID, minimum: Role
 ) -> Dataset:
-    try:
-        dataset = await catalog.get_dataset(dataset_id)
-    except DatasetNotFound:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dataset не найден") from None
+    dataset = await _existing_dataset(catalog, dataset_id)
     _authorize(principal, dataset.project_id, minimum)
     return dataset
 
 
-async def _uploadable_dataset(catalog: Catalog, principal: Principal, dataset_id: UUID) -> None:
-    dataset = await _accessible_dataset(catalog, principal, dataset_id, Role.EDITOR)
+async def _existing_dataset(catalog: Catalog, dataset_id: UUID) -> Dataset:
+    try:
+        return await catalog.get_dataset(dataset_id)
+    except DatasetNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dataset не найден") from None
+
+
+async def _uploadable_dataset(
+    catalog: Catalog, principal: Principal, dataset_id: UUID, log: audit.AuditLog
+) -> None:
+    """Upload — запись содержимого данных: отказ в нём оставляет Audit Event."""
+    dataset = await _existing_dataset(catalog, dataset_id)
+    try:
+        authorize(principal, dataset.project_id, Role.EDITOR)
+    except ProjectAccessDenied as denied:
+        await log.denied(
+            audit.AuditAction.DATASET_UPLOAD,
+            user_id=principal.user_id,
+            project_id=denied.project_id,
+            object_id=dataset_id,
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
     if dataset.archived:
         raise HTTPException(status.HTTP_409_CONFLICT, "Dataset в архиве")
 

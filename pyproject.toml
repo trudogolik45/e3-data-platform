@@ -111,6 +111,12 @@ protected_modules = ["e3.runs.*"]
 allowed_importers = ["e3.runs"]
 
 [[tool.importlinter.contracts]]
+name = "Внутренности audit видны только audit"
+type = "protected"
+protected_modules = ["e3.audit.*"]
+allowed_importers = ["e3.audit"]
+
+[[tool.importlinter.contracts]]
 name = "shared не зависит от доменных модулей"
 type = "forbidden"
 source_modules = ["e3.shared"]
@@ -120,6 +126,7 @@ forbidden_modules = [
     "e3.blocks",
     "e3.pipelines",
     "e3.runs",
+    "e3.audit",
     "e3.api",
     "e3.execution",
 ]

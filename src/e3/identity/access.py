@@ -21,6 +21,10 @@ _LADDER = (Role.VIEWER, Role.EDITOR, Role.ADMIN)
 class ProjectAccessDenied(Exception):
     """У пользователя нет Membership в Project с нужной Role."""
 
+    def __init__(self, project_id: UUID) -> None:
+        super().__init__(str(project_id))
+        self.project_id = project_id
+
 
 @dataclass(frozen=True)
 class Principal:
@@ -31,4 +35,4 @@ class Principal:
 def authorize(principal: Principal, project_id: UUID, minimum: Role) -> None:
     role = principal.project_roles.get(project_id)
     if role is None or not role.includes(minimum):
-        raise ProjectAccessDenied(str(project_id))
+        raise ProjectAccessDenied(project_id)

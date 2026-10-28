@@ -19,6 +19,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from e3 import audit
+from e3.catalog.datasets import get_dataset
 from e3.catalog.inspection import (
     HEADER_READ_LIMIT,
     StagedObject,
@@ -122,7 +124,7 @@ class Uploads:
         )
         return StartedUpload(upload_id, UploadState.PENDING, presigned)
 
-    async def complete(self, dataset_id: UUID, upload_id: UUID) -> UploadStatus:
+    async def complete(self, dataset_id: UUID, upload_id: UUID, *, by: UUID) -> UploadStatus:
         claim = await self._claim(dataset_id, upload_id)
         if isinstance(claim, UploadStatus):
             return claim
@@ -132,7 +134,7 @@ class Uploads:
             return await self._reject(claim, str(rejection))
         except (FileNotUploaded, ObjectNotFound, StorageUnavailable) as error:
             return await self._release(claim, error)
-        return await self._commit(claim, manifest)
+        return await self._commit(claim, manifest, by)
 
     async def discard_staging(self, upload_id: UUID) -> None:
         await self._storage.delete(staging_key(upload_id))
@@ -200,11 +202,13 @@ class Uploads:
         obj = StagedObject(staged.size_bytes, staged.checksum_sha256, head)
         return inspect_staged_object(obj, declared_checksum_sha256=declared)
 
-    async def _commit(self, claim: _Claim, manifest: Manifest) -> UploadStatus:
+    async def _commit(self, claim: _Claim, manifest: Manifest, by: UUID) -> UploadStatus:
+        """DatasetVersion, завершение Upload и Audit Event — одной транзакцией."""
         async with self._sessions.begin() as session:
             row = await _lock(session, claim.dataset_id, claim.upload_id)
             if not _holds(row, claim):
                 return await _status(session, row)
+            dataset = await get_dataset(session, claim.dataset_id)
             version = await register(
                 session,
                 dataset_id=claim.dataset_id,
@@ -213,6 +217,14 @@ class Uploads:
                 data_schema=manifest.data_schema,
                 manifest_uri=self._storage.uri(manifest_key(claim.dataset_id, claim.version_id)),
                 upload_id=claim.upload_id,
+            )
+            await audit.record(
+                session,
+                audit.AuditAction.DATASET_UPLOAD,
+                user_id=by,
+                project_id=dataset.project_id,
+                object_id=version.version_id,
+                dedup_key=str(version.version_id),
             )
             _finish(row, UploadState.COMPLETED)
             return UploadStatus(row.id, UploadState.COMPLETED, version=version)

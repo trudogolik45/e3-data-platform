@@ -51,8 +51,8 @@ class Catalog:
     async def start_upload(self, dataset_id: UUID, *, checksum_sha256: str) -> StartedUpload:
         return await self._uploads.start(dataset_id, checksum_sha256=checksum_sha256)
 
-    async def complete_upload(self, dataset_id: UUID, upload_id: UUID) -> UploadStatus:
-        return await self._uploads.complete(dataset_id, upload_id)
+    async def complete_upload(self, dataset_id: UUID, upload_id: UUID, *, by: UUID) -> UploadStatus:
+        return await self._uploads.complete(dataset_id, upload_id, by=by)
 
     async def discard_staging(self, upload_id: UUID) -> None:
         await self._uploads.discard_staging(upload_id)
@@ -70,9 +70,21 @@ class Catalog:
             return await versions.resolve(session, version_id)
 
     async def publish(
-        self, *, project_id: UUID, dataset_id: UUID, source: NodeOutputRef, manifest_uri: str
+        self,
+        *,
+        project_id: UUID,
+        dataset_id: UUID,
+        source: NodeOutputRef,
+        manifest_uri: str,
+        by: UUID,
+        trace_id: str,
     ) -> DatasetVersion:
-        """Публикует NodeOutput как новую DatasetVersion; повтор отдаёт ту же версию."""
+        """Публикует NodeOutput от имени `by`; повтор отдаёт ту же версию."""
         return await self._publications.publish(
-            project_id=project_id, dataset_id=dataset_id, source=source, manifest_uri=manifest_uri
+            project_id=project_id,
+            dataset_id=dataset_id,
+            source=source,
+            manifest_uri=manifest_uri,
+            by=by,
+            trace_id=trace_id,
         )
