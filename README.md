@@ -53,7 +53,7 @@ flowchart LR
 - Сетевая изоляция pod'ов попыток: `NetworkPolicy` из `deploy/kubernetes/attempt-network-policy.yaml` оставляет им только DNS кластера, S3, Kubernetes API и связь driver ↔ executor. Нет интернета, PostgreSQL, Kafka и API Control Plane. **Политику применяет развёртывание** в namespace попыток, подставив адреса S3 и API server (`@S3_CIDR@`, `@S3_PORT@`, `@KUBE_API_CIDR@`, `@KUBE_API_PORT@`); Execution Controller её не создаёт. CNI кластера должен соблюдать NetworkPolicy, включая egress и `ipBlock`.
 - CI на каждый PR и e2e-прогон на kind на каждый push в `main`.
 
-Дальше по плану: сетевая изоляция workload'ов, затем Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).
+Дальше по плану: Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).
 
 ## Стек
 

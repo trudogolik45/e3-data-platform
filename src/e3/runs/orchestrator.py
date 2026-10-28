@@ -423,7 +423,7 @@ class RunOrchestrator:
 
         Логи обработки события несут его `trace_id`.
         """
-        with span(f"handle {event.type}", event.trace_id, attributes=_attempt(event)):
+        with span(f"handle {event.type}", event.trace_id, attributes=event.span_attributes()):
             await self._handle_event(event)
 
     async def _handle_event(self, event: ExecutionEvent) -> None:
@@ -1142,7 +1142,3 @@ def _to_node_output(row: NodeOutputRow) -> NodeOutput:
         format=_format(row.format),
         data_schema=DataSchema.model_validate(row.data_schema),
     )
-
-
-def _attempt(message: ExecutionEvent) -> dict[str, str]:
-    return {"node_run_id": str(message.node_run_id), "attempt_id": str(message.attempt_id)}

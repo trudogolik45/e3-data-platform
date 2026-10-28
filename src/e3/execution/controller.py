@@ -166,7 +166,7 @@ class ExecutionController:
 
     async def handle(self, command: Command) -> None:
         """Логи и спан обработки команды несут её `trace_id`."""
-        with span(f"handle {command.type}", command.trace_id, attributes=_attempt(command)):
+        with span(f"handle {command.type}", command.trace_id, attributes=command.span_attributes()):
             await self._handle(command)
             log.info("%s попытки %s обработана", command.type, command.attempt_id)
 
@@ -368,10 +368,6 @@ def _state(application: dict[str, Any]) -> dict[str, Any]:
     return application.get("status", {}).get("applicationState", {})
 
 
-def _attempt(message: Command | ExecutionEvent) -> dict[str, str]:
-    return {"node_run_id": str(message.node_run_id), "attempt_id": str(message.attempt_id)}
-
-
 def _attempt_span(
     application: dict[str, Any], outcome: ExecutionEvent
 ) -> AbstractContextManager[Span]:
@@ -384,5 +380,5 @@ def _attempt_span(
         "Spark attempt",
         outcome.trace_id,
         start_time=datetime.fromisoformat(created) if created else None,
-        attributes=_attempt(outcome) | {"outcome": outcome.type},
+        attributes=outcome.span_attributes() | {"outcome": outcome.type},
     )
