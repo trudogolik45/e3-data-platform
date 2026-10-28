@@ -28,6 +28,9 @@ BLOCKS=(read filter aggregate)
 CONTROLLER_STOP_SECONDS=30
 NETWORK_POLICY=deploy/kubernetes/attempt-network-policy.yaml
 PLATFORM_TOKEN=dev-platform-token # E3_PLATFORM_TOKEN сервиса api в docker-compose.yml
+# Только IPv4: в сети kind у контейнера api появляется IPv6, и Docker шлёт на него
+# IPv6-запросы с хоста (`localhost` → ::1), а uvicorn слушает только 0.0.0.0.
+API_HOST=127.0.0.1:8000
 
 export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
 export COMPOSE_PROJECT_NAME=e3-e2e
@@ -123,11 +126,9 @@ create_cluster() {
   connect_to_kind "$REGISTRY"
 }
 
-# Сеть kind — вторая, с низшим приоритетом шлюза: иначе Docker 29 уводит в неё маршрут
-# по умолчанию и проброс портов контейнера, и с хоста API на Linux отвечает сбросом.
 connect_to_kind() {
   if [[ "$(docker inspect -f '{{json .NetworkSettings.Networks.kind}}' "$1")" == null ]]; then
-    docker network connect --gw-priority -1 kind "$1"
+    docker network connect kind "$1"
   fi
 }
 
@@ -142,7 +143,7 @@ install_spark_operator() {
 start_control_plane() {
   log "Control Plane: PostgreSQL, Kafka, MinIO, API"
   compose up -d --build
-  until curl -fsS http://localhost:8000/docs >/dev/null 2>&1; do sleep 1; done
+  until curl -fsS http://$API_HOST/docs >/dev/null 2>&1; do sleep 1; done
   # Топики создаёт Run Orchestrator при старте API; controller слушает уже готовые.
   until compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
     --list | grep -qx e3.execution.commands.v1; do sleep 1; done
@@ -152,25 +153,7 @@ start_control_plane() {
   export E3_E2E_S3_ADDRESS="$MINIO_IN_KIND:9000"
   export E3_E2E_POSTGRES_ADDRESS="$(in_kind postgres):5432"
   export E3_E2E_KAFKA_ADDRESS="$(in_kind kafka):9092"
-  curl -sS -m 5 -o /dev/null -w "api before connect %{http_code}\n" http://localhost:8000/docs || true
   export E3_E2E_CONTROL_PLANE_API_ADDRESS="$(in_kind api):8000"
-  curl -sS -m 5 -o /dev/null -w "api after connect %{http_code}\n" http://localhost:8000/docs || true
-}
-
-diagnose_network() { # ВРЕМЕННО: диагностика CI
-  docker version --format '{{.Server.Version}}'
-  for c in api minio postgres kafka; do
-    echo "--- $c"
-    docker inspect -f '{{json .NetworkSettings.Networks}}' "$(compose ps -q $c)" | head -c 1500; echo
-    docker exec "$(compose ps -q $c)" sh -c 'ip route 2>/dev/null || cat /proc/net/route' 2>&1 | head
-  done
-  for i in 1 2 3 4 5; do curl -sS -m 5 -o /dev/null -w "api %{http_code}\n" http://localhost:8000/docs || true; sleep 2; done
-  curl -sS -m 5 -o /dev/null -w "minio %{http_code}\n" http://localhost:9000/minio/health/live || true
-  docker ps --format '{{.Names}} {{.Status}} {{.Ports}}'
-  docker exec "$(compose ps -q api)" python -c "import urllib.request as u; print('inside', u.urlopen('http://127.0.0.1:8000/docs').status)" || true
-  curl -sS -m 5 -o /dev/null -w "api via kind ip %{http_code}\n" "http://$E3_E2E_CONTROL_PLANE_API_ADDRESS/docs" || true
-  compose logs --tail=15 api
-  sudo iptables -t nat -S 2>/dev/null | grep -E '8000|9000|DOCKER' | head -40 || true
 }
 
 # Подключает сервис compose к сети kind и печатает его адрес в ней.
@@ -201,7 +184,7 @@ register_block() {
   docker push -q "$image" >/dev/null
   digest=$(docker inspect -f '{{index .RepoDigests 0}}' "$image")
   sed "s|@EXECUTABLE_REF@|$digest|" "$ROOT/blocks/$block/block.yaml" >"$WORK/$block.yaml"
-  E3_API_URL=http://localhost:8000 E3_PLATFORM_TOKEN=$PLATFORM_TOKEN \
+  E3_API_URL=http://$API_HOST E3_PLATFORM_TOKEN=$PLATFORM_TOKEN \
     uv run --project "$ROOT" e3-register-block "$WORK/$block.yaml"
 }
 
@@ -244,13 +227,12 @@ main() {
   create_cluster
   install_spark_operator
   start_control_plane
-  diagnose_network
-  exit 1
+  apply_network_policy
   for block in "${BLOCKS[@]}"; do register_block "$block"; done
   controller_env
   start_controller
   log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence, рестарты, сеть попыток"
-  E3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
+  E3_E2E_API_URL=http://$API_HOST uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
 }
 
 main "$@"
