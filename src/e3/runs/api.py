@@ -37,6 +37,8 @@ class PipelineRunOut(BaseModel):
     inputs: dict[str, InputBinding]
     outputs: dict[str, OutputBinding]
     created_at: datetime
+    # Переход в SUCCEEDED, FAILED или CANCELLED; у активного запуска — null.
+    finished_at: datetime | None
     # Initiator: его Membership перепроверяется перед каждой Publication.
     initiated_by_user_id: UUID
     # Первопричина Fail-fast: первый упавший NodeRun.
@@ -183,6 +185,7 @@ def _run_out(run: PipelineRun) -> PipelineRunOut:
         inputs=run.inputs,
         outputs=run.outputs,
         created_at=run.created_at,
+        finished_at=run.finished_at,
         initiated_by_user_id=run.initiated_by_user_id,
         failed_node_run_id=run.failed_node_run_id,
     )

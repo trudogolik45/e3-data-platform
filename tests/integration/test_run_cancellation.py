@@ -153,6 +153,17 @@ async def test_cancel_of_pending_run_skips_every_node_and_ends_cancelled_at_once
     assert (await plant.api.run(run_id))["state"] == "CANCELLED"
 
 
+async def test_cancelled_run_keeps_finished_at_through_repeated_cancel(plant: Plant) -> None:
+    run_id = await plant.start()
+    cancelled = (await plant.api.cancel_run(run_id)).json()
+
+    await plant.api.cancel_run(run_id)
+
+    run = await plant.api.run(run_id)
+    assert cancelled["state"] == "CANCELLED"
+    assert run["finished_at"] == cancelled["finished_at"] is not None
+
+
 async def test_repeated_cancel_is_accepted_and_changes_nothing(plant: Plant) -> None:
     run_id = await plant.start()
     command, _ = await running(plant, run_id)

@@ -32,6 +32,10 @@ class PipelineRunRow(Base):
     idempotency_key: Mapped[str]
     request_hash: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Переход в SUCCEEDED, FAILED или CANCELLED; ставится один раз.
+    finished_at: Mapped[datetime | None]
+    # Удалён staging всех попыток запуска: срок хранения истёк.
+    staging_purged_at: Mapped[datetime | None]
     # Initiator: его Membership перепроверяется перед каждой Publication (ADR-0004).
     initiated_by_user_id: Mapped[UUID]
     # Первый NodeRun, ушедший в FAILED: первопричина Fail-fast.
