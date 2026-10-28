@@ -42,7 +42,7 @@ _root_ids: ContextVar[tuple[int, int] | None] = ContextVar("root_ids", default=N
 _ROOT_SPAN_NAMESPACE = UUID("2b7e1f4a-9c3d-4e8b-a1f6-5d0c7e9b3a24")
 _SPAN_ID_BITS = 64
 # Сколько процесс ждёт отправки спанов при остановке.
-FLUSH_MILLIS = 5000
+FLUSH_TIMEOUT_MILLIS = 5000
 _propagator = TraceContextTextMapPropagator()
 
 # Логгеры uvicorn пишут своими обработчиками: их направляем в общий JSON.
@@ -143,11 +143,11 @@ def configure_tracing(service_name: str) -> None:
     trace.set_tracer_provider(provider)
 
 
-def flush_spans(timeout_millis: int = FLUSH_MILLIS) -> None:
-    """Досылает накопленные спаны процесса, не дольше `timeout_millis`."""
+def flush_spans() -> None:
+    """Досылает накопленные спаны процесса, не дольше `FLUSH_TIMEOUT_MILLIS`."""
     provider = trace.get_tracer_provider()
     if isinstance(provider, TracerProvider):
-        provider.force_flush(timeout_millis)
+        provider.force_flush(FLUSH_TIMEOUT_MILLIS)
 
 
 def _tracer() -> trace.Tracer:

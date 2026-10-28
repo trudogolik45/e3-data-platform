@@ -14,7 +14,6 @@ import os
 import signal
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from types import FrameType
 from typing import TYPE_CHECKING
 
 import boto3
@@ -157,15 +156,22 @@ def attempt_credentials(settings: ExecutionSettings) -> StsCredentials:
 def main() -> None:
     configure_logging()
     configure_tracing("e3-execution-controller")
-    signal.signal(signal.SIGTERM, _terminate)
     with contextlib.suppress(KeyboardInterrupt):
-        asyncio.run(serve(ExecutionSettings()))  # pyright: ignore[reportCallIssue]
+        asyncio.run(_serve_until_terminated(ExecutionSettings()))  # pyright: ignore[reportCallIssue]
 
 
-def _terminate(signum: int, _frame: FrameType | None) -> None:
-    """SIGTERM останавливает сразу, как без обработчика, но сначала досылает спаны.
+async def _serve_until_terminated(settings: ExecutionSettings) -> None:
+    """SIGTERM ловит цикл событий: между его шагами никто не держит блокировок трасс и логов."""
+    asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, _terminate)
+    await serve(settings)
 
-    Мягкий выход ждал бы прощания с Kafka дольше, чем даёт остановка процесса.
+
+def _terminate() -> None:
+    """Выход сразу, с кодом как от SIGTERM без обработчика, но после досылки спанов и логов.
+
+    Мягкий выход ждал бы прощания с Kafka дольше, чем даёт остановка процесса. Клиентов
+    Kafka не закрываем: события уходят с подтверждением брокера, недосланное повторится.
     """
     flush_spans()
-    os._exit(128 + signum)
+    logging.shutdown()
+    os._exit(128 + signal.SIGTERM)
