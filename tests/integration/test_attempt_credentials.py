@@ -68,6 +68,7 @@ class Lake:
     other_attempt: str
     other_version: str
     upload: str
+    artifact: str
 
 
 @pytest.fixture
@@ -87,6 +88,7 @@ def lake(base_settings: Settings) -> Lake:
         other_attempt=f"staging/executions/{uuid4()}/data/manifest.json",
         other_version=f"datasets/{dataset}/v2/manifest.json",
         upload=f"staging/uploads/{uuid4()}",
+        artifact=f"artifacts/{uuid4()}/{attempt_id}/driver.log",
     )
     keys = [f"datasets/{dataset}/v1/manifest.json", lake.input_file]
     for key in [*keys, lake.other_attempt, lake.other_version, lake.upload]:
@@ -176,6 +178,33 @@ async def test_attempt_keys_cannot_write_outside_output_prefix(
 
     assert codes == ["AccessDenied"] * 3
     assert deleted == "AccessDenied"
+
+
+async def test_only_controller_writes_attempt_diagnostic_artifacts(
+    credentials: StsCredentials, lake: Lake, base_settings: Settings
+) -> None:
+    keys = await credentials.issue(lake.context)
+    attempt = s3_client(base_settings, keys)
+    controller = controller_client(base_settings)
+
+    denied = _denied(lambda: attempt.put_object(Bucket=BUCKET, Key=lake.artifact, Body=b"log"))
+    controller.put_object(Bucket=BUCKET, Key=lake.artifact, Body=b"log")
+
+    assert denied == "AccessDenied"
+    assert (
+        s3_client(base_settings, None).get_object(Bucket=BUCKET, Key=lake.artifact)["Body"].read()
+        == b"log"
+    )
+
+
+def controller_client(settings: Settings) -> S3Client:
+    return boto3.client(
+        "s3",
+        endpoint_url=settings.s3_endpoint_url,
+        aws_access_key_id=CONTROLLER_USER,
+        aws_secret_access_key=CONTROLLER_SECRET,
+        region_name=settings.s3_region,
+    )
 
 
 async def test_attempt_keys_live_as_long_as_configured(

@@ -11,6 +11,10 @@ Controller ничего не перезапускает: ретраи решае
 
 Упавшая попытка с `error.json` блока — `BLOCK_FAILED` с его текстом, без него —
 текст Spark Operator. В обоих случаях в ошибке указано, где логи driver.
+
+После итога логи driver и executor попытки уходят в Diagnostic Artifact под
+`artifacts/{node_run_id}/{attempt_id}/` ключами самого контроллера: pod мог упасть
+по OOM, а Attempt Credentials на `artifacts/` не распространяются.
 """
 
 import logging
@@ -22,6 +26,7 @@ from e3.execution.workload import (
     COMMAND_ANNOTATION,
     REPORTED_LABEL,
     Pod,
+    PodLog,
     Reported,
     WorkloadConfig,
     attempt_fence,
@@ -62,6 +67,8 @@ FAILURE_REASONS: dict[str, FailureReason] = {
     "SUBMISSION_FAILED": "SUBMISSION_FAILED",
 }
 TERMINAL_STATES = {COMPLETED, *FAILURE_REASONS}
+ARTIFACTS_PREFIX = "artifacts"
+LOG_CONTENT_TYPE = "text/plain; charset=utf-8"
 # Фазы pod'а, в которых он точно не работает; `Unknown` ничего не доказывает.
 FINISHED_PHASES = {"Succeeded", "Failed"}
 
@@ -83,8 +90,20 @@ class SparkApplications(Protocol):
         """Удаляет ресурс; уже удалённый — no-op."""
         ...
 
+    async def unpreserved(self) -> list[dict[str, Any]]:
+        """Ресурсы попыток, об итоге которых сообщили, а логи ещё не сохранили."""
+        ...
+
+    async def mark_preserved(self, name: str) -> None:
+        """Логи попытки уже в `artifacts/`: больше их не читать."""
+        ...
+
     async def pods(self, attempt_id: UUID) -> list[Pod]:
         """Pod'ы driver и executor с меткой попытки."""
+        ...
+
+    async def pod_logs(self, attempt_id: UUID) -> list[PodLog]:
+        """Логи pod'ов попытки; удалённый pod логов не даёт."""
         ...
 
     async def has_secret(self, name: str) -> bool: ...
@@ -114,6 +133,12 @@ class AttemptCredentials(Protocol):
         ...
 
 
+class Artifacts(Protocol):
+    async def put(self, key: str, data: bytes, *, content_type: str) -> None:
+        """Пишет объект; тот же ключ — перезапись, а не второй объект."""
+        ...
+
+
 class ExecutionController:
     def __init__(
         self,
@@ -121,12 +146,14 @@ class ExecutionController:
         events: Events,
         results: Results,
         credentials: AttemptCredentials,
+        artifacts: Artifacts,
         config: WorkloadConfig,
     ) -> None:
         self._applications = applications
         self._events = events
         self._results = results
         self._credentials = credentials
+        self._artifacts = artifacts
         self._config = config
 
     async def handle(self, command: Command) -> None:
@@ -175,10 +202,14 @@ class ExecutionController:
         Живое задание удаляется; если опоздавшая SubmitExecution успеет снова занять имя,
         следующая CancelExecution удалит его ещё раз. Терминальное задание не трогаем:
         его итог уже доказуем.
+
+        Логи живого задания сохраняются до удаления: вместе с ним уйдут и pod'ы. Сбой
+        сохранения отмену не задерживает.
         """
         name = workload_name(command.attempt_id)
         application = await self._applications.get(name)
         if application is not None and _live(application):
+            await self._save_logs(_command(application))
             await self._applications.delete(name)
         await self._fence_and_settle(command)
 
@@ -193,11 +224,17 @@ class ExecutionController:
             await self._settle(application)
 
     async def report(self) -> int:
-        """Сообщает о сменах состояния попыток; возвращает число ещё не завершённых."""
+        """Сообщает о сменах состояния попыток и сохраняет логи завершённых.
+
+        Возвращает число ещё не завершённых попыток.
+        """
         applications = await self._applications.unreported()
         for application in applications:
             with traced(_command(application).trace_id):
                 await self._report(application)
+        for application in await self._applications.unpreserved():
+            with traced(_command(application).trace_id):
+                await self._preserve(application)
         return len(applications)
 
     async def _report(self, application: dict[str, Any]) -> None:
@@ -257,10 +294,31 @@ class ExecutionController:
         operator_error = f"{state['state']}: {state.get('errorMessage', '')}"
         return _failed(application, command, operator_error, FAILURE_REASONS[state["state"]])
 
+    async def _preserve(self, application: dict[str, Any]) -> None:
+        """Итог уже сообщён: сбой Kubernetes или S3 его не меняет, следующий проход повторит."""
+        if await self._save_logs(_command(application)):
+            await self._applications.mark_preserved(application["metadata"]["name"])
+
+    async def _save_logs(self, command: SubmitExecution) -> bool:
+        """Логи pod'ов попытки в её Diagnostic Artifact; сбой пишется в лог контроллера."""
+        try:
+            for pod_log in await self._applications.pod_logs(command.attempt_id):
+                key = diagnostic_artifact_key(command, pod_log)
+                await self._artifacts.put(key, pod_log.text, content_type=LOG_CONTENT_TYPE)
+        except Exception:
+            log.exception("логи попытки %s не сохранены в artifacts/", command.attempt_id)
+            return False
+        return True
+
     async def _dead(self, attempt_id: UUID) -> bool:
         """Ни один pod попытки уже не работает и не может заработать."""
         pods = await self._applications.pods(attempt_id)
         return all(pod.phase in FINISHED_PHASES and not pod.terminating for pod in pods)
+
+
+def diagnostic_artifact_key(command: SubmitExecution, pod_log: PodLog) -> str:
+    """Ключ выводится из попытки и pod'а: повторное сохранение перезаписывает тот же объект."""
+    return f"{ARTIFACTS_PREFIX}/{command.node_run_id}/{command.attempt_id}/{pod_log.name}.log"
 
 
 def _command(application: dict[str, Any]) -> SubmitExecution:

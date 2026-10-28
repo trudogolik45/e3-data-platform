@@ -2,9 +2,9 @@
 
 Читает `SubmitExecution`, `ReconcileExecution` и `CancelExecution` из `commands.v1`,
 создаёт или удаляет SparkApplication, выдаёт попыткам Attempt Credentials, ставит
-Attempt Fence и шлёт события попыток в `events.v1`. Offset команды коммитится
-только после её обработки: падение посреди даёт повтор, а повтор упирается в то
-же имя ресурса.
+Attempt Fence, шлёт события попыток в `events.v1` и сохраняет их логи в `artifacts/`.
+Offset команды коммитится только после её обработки: падение посреди даёт повтор,
+а повтор упирается в то же имя ресурса.
 """
 
 import asyncio
@@ -99,6 +99,7 @@ async def _commands(
     )
     producer = reliable_producer(settings.kafka_bootstrap_servers)
     api = ApiClient()
+    storage = _storage(settings)
     try:
         await producer.start()
         await consumer.start()
@@ -107,8 +108,9 @@ async def _commands(
                 CustomObjectsApi(api), CoreV1Api(api), settings.spark_namespace
             ),
             KafkaEvents(producer),
-            StoredResults(_storage(settings)),
+            StoredResults(storage),
             attempt_credentials(settings),
+            storage,
             settings.workload(),
         )
         yield CommandConsumer(consumer, controller), controller

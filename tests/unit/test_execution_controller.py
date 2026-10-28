@@ -16,6 +16,7 @@ from e3.execution.workload import (
     TRACE_LABEL,
     VERSION,
     Pod,
+    PodLog,
     WorkloadConfig,
     spark_application,
 )
@@ -33,6 +34,7 @@ from e3.shared.messages import (
     reconcile,
     started,
 )
+from e3.shared.storage import StorageUnavailable
 from tests.fakes.attempt_credentials import ATTEMPT_KEYS, FixedCredentials, StsUnavailable
 from tests.fakes.spark_applications import InMemorySparkApplications
 from tests.logs import TraceLogs
@@ -67,6 +69,25 @@ class StoredResults:
         return self.errors.get(context.output_prefix)
 
 
+class RecordedArtifacts:
+    """Объекты под `artifacts/` глазами S3; `fail_once` — следующая запись упадёт."""
+
+    def __init__(self) -> None:
+        self.objects: dict[str, bytes] = {}
+        self.puts = 0
+        self._failures = 0
+
+    async def put(self, key: str, data: bytes, *, content_type: str) -> None:
+        if self._failures:
+            self._failures -= 1
+            raise StorageUnavailable("SlowDown")
+        self.puts += 1
+        self.objects[key] = data
+
+    def fail_once(self) -> None:
+        self._failures += 1
+
+
 def command(pod: PodSize | None = None) -> SubmitExecution:
     node_run_id, attempt_id = uuid4(), uuid4()
     context = ExecutionContext(
@@ -87,10 +108,16 @@ def command(pod: PodSize | None = None) -> SubmitExecution:
 
 def controller(
     credentials: FixedCredentials | None = None,
+    artifacts: RecordedArtifacts | None = None,
 ) -> tuple[ExecutionController, InMemorySparkApplications, RecordedEvents, StoredResults]:
     applications, events, results = InMemorySparkApplications(), RecordedEvents(), StoredResults()
     execution = ExecutionController(
-        applications, events, results, credentials or FixedCredentials(), CONFIG
+        applications,
+        events,
+        results,
+        credentials or FixedCredentials(),
+        artifacts or RecordedArtifacts(),
+        CONFIG,
     )
     return execution, applications, events, results
 
@@ -473,7 +500,9 @@ async def test_fenced_attempt_is_reported_lost_only_after_its_pods_are_gone() ->
     assert events.sent == []
 
     applications.set_pods(submit.attempt_id)
-    restarted = ExecutionController(applications, events, results, FixedCredentials(), CONFIG)
+    restarted = ExecutionController(
+        applications, events, results, FixedCredentials(), RecordedArtifacts(), CONFIG
+    )
     await restarted.report()
     await restarted.report()
 
@@ -560,6 +589,137 @@ async def test_name_reoccupied_by_late_submit_is_freed_and_fenced_by_next_cancel
 
     assert applications.items[name(submit)]["metadata"]["labels"][CANCELLED_LABEL] == "true"
     assert [event.type for event in events.sent] == ["ExecutionCancelled"]
+
+
+DRIVER_LOG = PodLog(name="driver", text=b"INFO SparkContext: Running Spark\n")
+EXECUTOR_LOG = PodLog(name="executor-1", text=b"INFO Executor: Finished task 0.0\n")
+
+
+def artifact(submit: SubmitExecution, log: PodLog) -> str:
+    return f"artifacts/{submit.node_run_id}/{submit.attempt_id}/{log.name}.log"
+
+
+@pytest.mark.parametrize("state", ["COMPLETED", "FAILED"])
+async def test_finished_attempt_leaves_driver_and_executor_logs_under_its_artifacts(
+    state: str,
+) -> None:
+    artifacts = RecordedArtifacts()
+    execution, applications, events, _ = controller(artifacts=artifacts)
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), state)
+    applications.set_pods(submit.attempt_id, Pod(phase="Succeeded"), Pod(phase="Failed"))
+    applications.set_logs(submit.attempt_id, DRIVER_LOG, EXECUTOR_LOG)
+
+    await execution.report()
+
+    assert artifacts.objects == {
+        artifact(submit, DRIVER_LOG): DRIVER_LOG.text,
+        artifact(submit, EXECUTOR_LOG): EXECUTOR_LOG.text,
+    }
+    assert events.sent[-1].type in {"ExecutionSucceeded", "ExecutionFailed"}
+
+
+async def test_failed_artifact_write_is_retried_and_keeps_attempt_outcome() -> None:
+    artifacts = RecordedArtifacts()
+    execution, applications, events, _ = controller(artifacts=artifacts)
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+    applications.set_logs(submit.attempt_id, DRIVER_LOG)
+    artifacts.fail_once()
+    await execution.report()
+    assert artifacts.objects == {}
+
+    await execution.report()
+
+    assert artifacts.objects == {artifact(submit, DRIVER_LOG): DRIVER_LOG.text}
+    [outcome] = events.sent
+    assert isinstance(outcome, ExecutionFailed)
+    assert outcome.payload.reason == "SPARK_FAILED"
+
+
+async def test_failed_log_preservation_is_logged_with_attempt_trace_id(
+    trace_logs: TraceLogs,
+) -> None:
+    artifacts = RecordedArtifacts()
+    execution, applications, _, _ = controller(artifacts=artifacts)
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+    applications.set_logs(submit.attempt_id, DRIVER_LOG)
+    artifacts.fail_once()
+
+    await execution.report()
+
+    assert f"логи попытки {submit.attempt_id} не сохранены в artifacts/" in trace_logs("run-1")
+
+
+async def test_failed_kubernetes_log_read_is_retried_and_keeps_attempt_outcome() -> None:
+    artifacts = RecordedArtifacts()
+    execution, applications, events, _ = controller(artifacts=artifacts)
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+    applications.set_logs(submit.attempt_id, DRIVER_LOG)
+    applications.fail_logs_once()
+    await execution.report()
+    assert artifacts.objects == {}
+
+    await execution.report()
+
+    assert artifacts.objects == {artifact(submit, DRIVER_LOG): DRIVER_LOG.text}
+    assert [event.type for event in events.sent] == ["ExecutionFailed"]
+
+
+async def test_attempt_whose_pods_are_deleted_is_reported_without_logs() -> None:
+    artifacts = RecordedArtifacts()
+    execution, _, events, _ = controller(artifacts=artifacts)
+    submit = command()
+
+    await execution.handle(reconcile(submit, 1))
+    await execution.report()
+
+    assert [event.type for event in events.sent] == ["ExecutionLost"]
+    assert artifacts.objects == {}
+
+
+async def test_saved_logs_are_not_written_again_on_later_passes() -> None:
+    artifacts = RecordedArtifacts()
+    execution, applications, _, _ = controller(artifacts=artifacts)
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+    applications.set_logs(submit.attempt_id, DRIVER_LOG, EXECUTOR_LOG)
+
+    await execution.report()
+    await execution.report()
+    await execution.handle(reconcile(submit, 1))
+    await execution.report()
+
+    assert set(artifacts.objects) == {artifact(submit, DRIVER_LOG), artifact(submit, EXECUTOR_LOG)}
+    assert artifacts.puts == 2
+
+
+async def test_cancel_keeps_logs_of_running_attempt_before_its_pods_go() -> None:
+    artifacts = RecordedArtifacts()
+    execution, applications, events, _ = controller(artifacts=artifacts)
+    submit = command()
+    await execution.submit(submit)
+    applications.set_state(name(submit), "RUNNING")
+    applications.set_pods(submit.attempt_id, Pod(phase="Running"), Pod(phase="Running"))
+    applications.set_logs(submit.attempt_id, DRIVER_LOG, EXECUTOR_LOG)
+
+    await execution.handle(cancel(submit, 1))
+    applications.set_pods(submit.attempt_id)
+    applications.set_logs(submit.attempt_id)
+    await execution.report()
+
+    assert artifacts.objects == {
+        artifact(submit, DRIVER_LOG): DRIVER_LOG.text,
+        artifact(submit, EXECUTOR_LOG): EXECUTOR_LOG.text,
+    }
+    assert events.sent[-1].type == "ExecutionCancelled"
 
 
 @pytest.mark.parametrize("missing", ["E3_S3_ACCESS_KEY", "E3_S3_SECRET_KEY"])

@@ -8,7 +8,11 @@
 from typing import Any
 from uuid import UUID, uuid4
 
-from e3.execution.workload import REPORTED_LABEL, Pod, Reported
+from e3.execution.workload import PRESERVED_LABEL, REPORTED_LABEL, Pod, PodLog, Reported
+
+
+class KubernetesUnavailable(Exception):
+    """Kubernetes API не ответил на чтение логов."""
 
 
 class InMemorySparkApplications:
@@ -16,6 +20,8 @@ class InMemorySparkApplications:
         self.items: dict[str, dict[str, Any]] = {}
         self.secrets: dict[str, dict[str, Any]] = {}
         self._pods: dict[UUID, list[Pod]] = {}
+        self._logs: dict[UUID, list[PodLog]] = {}
+        self._log_failures = 0
         self._hidden: set[str] = set()
         self._reoccupy: dict[str, dict[str, Any]] = {}
 
@@ -53,8 +59,32 @@ class InMemorySparkApplications:
     async def mark_reported(self, name: str, reported: Reported) -> None:
         self.items[name]["metadata"]["labels"][REPORTED_LABEL] = reported
 
+    async def unpreserved(self) -> list[dict[str, Any]]:
+        return [
+            app
+            for app in self.items.values()
+            if app["metadata"]["labels"].get(REPORTED_LABEL) == Reported.DONE
+            and PRESERVED_LABEL not in app["metadata"]["labels"]
+        ]
+
+    async def mark_preserved(self, name: str) -> None:
+        self.items[name]["metadata"]["labels"][PRESERVED_LABEL] = "true"
+
     async def pods(self, attempt_id: UUID) -> list[Pod]:
         return list(self._pods.get(attempt_id, []))
+
+    async def pod_logs(self, attempt_id: UUID) -> list[PodLog]:
+        if self._log_failures:
+            self._log_failures -= 1
+            raise KubernetesUnavailable
+        return list(self._logs.get(attempt_id, []))
+
+    def fail_logs_once(self) -> None:
+        self._log_failures += 1
+
+    def set_logs(self, attempt_id: UUID, *logs: PodLog) -> None:
+        """Логи pod'ов попытки, которые ещё можно прочитать."""
+        self._logs[attempt_id] = list(logs)
 
     def set_state(self, name: str, state: str, error: str | None = None) -> None:
         """Имитирует Spark Operator: пишет `status.applicationState`."""

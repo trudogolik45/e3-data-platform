@@ -43,8 +43,9 @@ services:
     ports: ["9000:9000", "9001:9001"]
 
   minio-init:
-    # Bucket и пользователь Execution Controller: его ключами он читает результаты
-    # и выдаёт Attempt Credentials через STS (ADR-0006), root ему не нужен.
+    # Bucket и пользователь Execution Controller: его ключами он читает результаты,
+    # пишет логи попыток в artifacts/ и выдаёт Attempt Credentials через STS (ADR-0006),
+    # root ему не нужен.
     image: cgr.dev/chainguard/minio-client:latest
     depends_on: [minio]
     environment:

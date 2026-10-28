@@ -33,6 +33,8 @@ PLURAL = "sparkapplications"
 ATTEMPT_LABEL = "e3.io/attempt-id"
 NODE_RUN_LABEL = "e3.io/node-run-id"
 REPORTED_LABEL = "e3.io/reported"
+# Логи driver и executor уже лежат в `artifacts/` (Diagnostic Artifact).
+PRESERVED_LABEL = "e3.io/logs-preserved"
 FENCED_LABEL = "e3.io/fenced"
 CANCELLED_LABEL = "e3.io/cancelled"
 # `trace_id` PipelineRun: по нему находятся ресурс попытки, её pod'ы и их логи.
@@ -57,6 +59,14 @@ class Pod:
     phase: str
     # Есть `deletionTimestamp`: pod ещё может работать.
     terminating: bool = False
+
+
+@dataclass(frozen=True)
+class PodLog:
+    """Лог pod'а попытки; `name` — `driver` или `executor-{id}`."""
+
+    name: str
+    text: bytes
 
 
 @dataclass(frozen=True)
@@ -156,7 +166,7 @@ def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[
             "sparkVersion": config.spark_version,
             # Ретраи решает только Run Orchestrator (ADR-0003).
             "restartPolicy": {"type": "Never"},
-            "sparkConf": _s3a_conf(config.s3_endpoint_url),
+            "sparkConf": _s3a_conf(config.s3_endpoint_url) | _keep_executor_pods(),
             "driver": pod | {"serviceAccount": config.service_account},
             "executor": pod | {"instances": 1},
         },
@@ -170,6 +180,11 @@ def _pod_size(size: PodSize) -> dict[str, Any]:
         "coreRequest": f"{size.cpu_millicores}m",
         "memory": f"{size.memory_mib}m",
     }
+
+
+def _keep_executor_pods() -> dict[str, str]:
+    """Завершённый executor живёт до удаления `SparkApplication`: его лог нужен в `artifacts/`."""
+    return {"spark.kubernetes.executor.deleteOnTermination": "false"}
 
 
 def _s3a_conf(endpoint_url: str) -> dict[str, str]:

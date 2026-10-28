@@ -1,4 +1,5 @@
-"""E2E на kind: Attempt Fence, ретрай пропавшей попытки (ADR-0003) и отмена запуска.
+"""E2E на kind: Attempt Fence, ретрай пропавшей попытки (ADR-0003), отмена запуска и
+логи отменённой попытки в Diagnostic Artifact.
 
 Запускает `scripts/e2e.sh` с коротким `E3_RECONCILE_AFTER_SECONDS`, чтобы
 reconciliation успела за время теста. Без `E3_E2E_API_URL` тесты пропускаются.
@@ -38,7 +39,7 @@ from e3.shared.messages import (
     parse_command,
     reconcile,
 )
-from tests.e2e.cluster import attempt_secret
+from tests.e2e.cluster import attempt_logs, attempt_secret
 from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_graph
@@ -65,6 +66,9 @@ class _Unused:
     async def fetch_error(self, context: ExecutionContext) -> ExecutionError | None:
         raise AssertionError("SubmitExecution не читает ошибку блока")
 
+    async def put(self, key: str, data: bytes, *, content_type: str) -> None:
+        raise AssertionError("SubmitExecution не пишет Diagnostic Artifact")
+
 
 @pytest.fixture
 async def cluster() -> AsyncIterator[tuple[KubernetesSparkApplications, ExecutionController]]:
@@ -80,6 +84,7 @@ async def cluster() -> AsyncIterator[tuple[KubernetesSparkApplications, Executio
             _Unused(),
             _Unused(),
             attempt_credentials(settings),
+            _Unused(),
             settings.workload(),
         )
         yield applications, controller
@@ -189,6 +194,9 @@ async def test_cancel_mid_spark_replaces_attempt_with_fence_and_ends_cancelled(
     assert fence is not None and is_fence(fence) and is_cancelled(fence)
     assert await applications.pods(attempt_id) == []
     assert [a["state"] for a in node["attempts"]] == ["CANCELLED"]
+    # Снимок на момент отмены: driver мог успеть лишь начать, executor — не подняться.
+    logs = await attempt_logs(node["node_run_id"], attempt_id, "driver.log")
+    assert logs["driver.log"]
 
 
 async def _start(api: Api) -> str:
