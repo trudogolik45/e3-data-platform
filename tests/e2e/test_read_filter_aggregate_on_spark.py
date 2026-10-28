@@ -26,7 +26,7 @@ from e3.execution.main import attempt_credentials
 from e3.execution.settings import ExecutionSettings
 from e3.execution.workload import ATTEMPT_LABEL, COMMAND_ANNOTATION, GROUP, PLURAL, VERSION
 from e3.settings import Settings
-from e3.shared.contracts import ExecutionContext, ExecutionResult
+from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
 from e3.shared.manifest import Manifest
 from e3.shared.messages import ExecutionEvent, parse_command
 from tests.e2e.cluster import attempt_secret, secret
@@ -119,13 +119,13 @@ def _graph() -> dict[str, Any]:
     return graph
 
 
-async def _start(api: Api) -> str:
+async def _start(api: Api, csv: bytes = CSV) -> str:
     pipeline_id = await api.new_pipeline(f"read-filter-aggregate-on-spark-{uuid4()}")
     assert (await api.save_draft(pipeline_id, _graph())).status_code == 200
     published = await api.publish(pipeline_id)
     assert published.status_code == 201, published.text
     source = await api.new_dataset(f"source-{uuid4()}")
-    uploaded = await api.upload_csv(source, CSV)
+    uploaded = await api.upload_csv(source, csv)
     assert uploaded.status_code == 200, uploaded.text
     target = await api.new_dataset(f"result-{uuid4()}")
     body = {
@@ -177,6 +177,22 @@ async def test_spark_publishes_typed_aggregates(finished: FinishedRun) -> None:
     ]
 
 
+async def test_value_that_does_not_cast_fails_read_once_with_column_and_type() -> None:
+    assert API_URL is not None
+    async with httpx.AsyncClient(base_url=API_URL, timeout=30) as client:
+        api = await project_api(client)
+        run_id = await _start(api, b"city,qty,price\nmsk,hello,10.0\n")
+        await _follow(api, run_id)
+        read = (await api.run_nodes(run_id))["read"]
+
+    assert read["state"] == "FAILED"
+    assert read["error"].startswith("колонка qty: значения не приводятся к long (логи driver: ")
+    [attempt] = read["attempts"]
+    assert f"/e3-{attempt['attempt_id']}, attempt_id {attempt['attempt_id']}" in read["error"]
+    assert "hello" not in read["error"]
+    assert (attempt["state"], attempt["reason"]) == ("FAILED", "BLOCK_FAILED")
+
+
 def _rows(dataset_id: str, version_id: str) -> list[tuple[Any, ...]]:
     """Строки опубликованной версии прямо из MinIO стенда."""
     settings = Settings(environment="dev")  # pyright: ignore[reportCallIssue]
@@ -222,6 +238,9 @@ class _Unused:
 
     async def fetch(self, context: ExecutionContext) -> ExecutionResult | None:
         raise AssertionError("повторная команда не читает результат")
+
+    async def fetch_error(self, context: ExecutionContext) -> ExecutionError | None:
+        raise AssertionError("повторная команда не читает ошибку блока")
 
 
 async def test_each_attempt_ran_on_own_keys_owned_by_its_spark_application(

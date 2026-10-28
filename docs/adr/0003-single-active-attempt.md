@@ -16,6 +16,7 @@
 - Таймаут не объявляет попытку `LOST`: он только запускает Reconciliation. `LOST` ставит Run Orchestrator по событию `ExecutionLost`, которое Execution Controller шлёт после Attempt Fence и проверки всех трёх условий.
 - Живая, но зависшая попытка в MVP может висеть бесконечно.
 - Attempt Fence реализован через `SparkApplication` с `spec.suspend: true`: на Spark Operator 2.5.2 такой ресурс уходит в `SUSPENDED` и не запускает ни driver, ни executor (e2e `test_suspended_attempt_fence_starts_no_pods`).
-- Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST` — максимум три повторные попытки. `NO_RESULT`, `OUTPUT_REJECTED` и `UNKNOWN` не ретраятся.
+- Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST` — максимум три повторные попытки. `BLOCK_FAILED`, `NO_RESULT`, `OUTPUT_REJECTED` и `UNKNOWN` не ретраятся.
+- `BLOCK_FAILED` детерминирована: блок сам распознал ошибку в параметрах или данных и записал её в `error.json`, повтор на тех же входах упадёт так же. Падение без читаемого `error.json` (OOM, вытеснение pod'а) остаётся `SPARK_FAILED` и ретраится.
 - Итог попытки фиксируется один раз: `ExecutionSucceeded` только сохраняет результат, а `SUCCEEDED` или `FAILED` ставит Run Orchestrator после проверки manifest.
 - Один NodeRun имеет не более одного принятого результата, сколько бы ни было попыток и повторных доставок команд.

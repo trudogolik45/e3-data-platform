@@ -10,7 +10,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from e3.execution.workload import Pod
-from e3.shared.contracts import ExecutionResult
+from e3.shared.contracts import ERROR_FILE_LIMIT, ExecutionError, ExecutionResult
 from e3.shared.messages import (
     ExecutionEvent,
     ExecutionSucceeded,
@@ -98,6 +98,61 @@ async def test_non_retryable_failure_fails_node_after_one_attempt(
 
     assert summary(await plant.attempts(run_id)) == [(1, "FAILED", reason)]
     assert (await plant.api.run(run_id))["state"] == "FAILED"
+
+
+CAST_ERROR = ExecutionError(
+    code="CAST_INVALID_INPUT",
+    message="колонка amount: значения не приводятся к long",
+    column="amount",
+    target_type="long",
+)
+
+
+async def test_block_error_fails_node_after_one_attempt_with_its_message(plant: Plant) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    controller = plant.fake.controller()
+    await controller.handle(command)
+
+    plant.fake.fail_spark(command, CAST_ERROR.model_dump_json().encode())
+    await controller.report()
+    await plant.consume_until(run_id, "read", "FAILED")
+
+    assert summary(await plant.attempts(run_id)) == [(1, "FAILED", "BLOCK_FAILED")]
+    error = (await plant.node(run_id, "read"))["error"]
+    assert error.startswith(CAST_ERROR.message)
+    assert f"default/e3-{command.attempt_id}, attempt_id {command.attempt_id}" in error
+    assert "ExitCode" not in error
+    assert (await plant.api.run(run_id))["state"] == "FAILED"
+
+
+@pytest.mark.parametrize(
+    "error_file",
+    [
+        None,
+        b"",
+        b'{"version": 1, "code": "CAST_INVALID_INPUT"',
+        CAST_ERROR.model_copy(update={"message": "я" * ERROR_FILE_LIMIT})
+        .model_dump_json()
+        .encode(),
+    ],
+    ids=["missing", "empty", "corrupted", "too-large"],
+)
+async def test_failure_without_readable_block_error_is_spark_failure_and_retried(
+    plant: Plant, error_file: bytes | None
+) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    controller = plant.fake.controller()
+    await controller.handle(command)
+
+    plant.fake.fail_spark(command, error_file)
+    await controller.report()
+    await plant.consume_attempts(run_id, 2)
+
+    assert summary(await plant.attempts(run_id))[0] == (1, "FAILED", "SPARK_FAILED")
+    error = (await plant.node(run_id, "read"))["error"]
+    assert error.startswith("FAILED: driver container failed with ExitCode: 1")
 
 
 async def test_rejected_manifest_fails_attempt_without_retry(plant: Plant) -> None:

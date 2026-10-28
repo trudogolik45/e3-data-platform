@@ -33,7 +33,7 @@ from mypy_boto3_s3 import S3Client
 from e3.execution.controller import ExecutionController
 from e3.execution.results import StoredResults
 from e3.execution.workload import Pod, WorkloadConfig, workload_name
-from e3.shared.contracts import RESULT_FILE, ExecutionResult, ResolvedInput
+from e3.shared.contracts import ERROR_FILE, RESULT_FILE, ExecutionResult, ResolvedInput
 from e3.shared.manifest import Column, DataSchema, Manifest, ManifestFile
 from e3.shared.messages import (
     COMMANDS_TOPIC,
@@ -158,6 +158,18 @@ class FakeExecutionController:
         self._s3.put_object(Bucket=self._bucket, Key=key, Body=result.model_dump_json().encode())
         self.cluster.set_state(workload_name(command.attempt_id), "COMPLETED")
         self.cluster.set_pods(command.attempt_id, Pod(phase="Succeeded"))
+
+    def fail_spark(self, command: SubmitExecution, error_file: bytes | None = None) -> None:
+        """Driver упал с exit 1; `error_file` — что блок успел записать в error.json."""
+        if error_file is not None:
+            key = self._key(f"{command.payload.context.output_prefix}/{ERROR_FILE}")
+            self._s3.put_object(Bucket=self._bucket, Key=key, Body=error_file)
+        self.cluster.set_state(
+            workload_name(command.attempt_id),
+            "FAILED",
+            error="driver container failed with ExitCode: 1",
+        )
+        self.cluster.set_pods(command.attempt_id, Pod(phase="Failed"))
 
     def execute(self, command: SubmitExecution) -> ExecutionResult:
         """CSV на `source` → Parquet на `data`, как `Read`; Parquet → копия на `result`."""

@@ -30,7 +30,7 @@ from e3.execution.workload import (
     is_fence,
     workload_name,
 )
-from e3.shared.contracts import ExecutionContext, ExecutionResult
+from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
 from e3.shared.messages import (
     ExecutionEvent,
     Submission,
@@ -61,6 +61,9 @@ class _Unused:
 
     async def fetch(self, context: ExecutionContext) -> ExecutionResult | None:
         raise AssertionError("SubmitExecution не читает результат")
+
+    async def fetch_error(self, context: ExecutionContext) -> ExecutionError | None:
+        raise AssertionError("SubmitExecution не читает ошибку блока")
 
 
 @pytest.fixture

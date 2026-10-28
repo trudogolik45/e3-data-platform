@@ -133,17 +133,22 @@ def test_json_schema_publishes_kafka_messages() -> None:
     )
 
 
-def test_failure_of_old_format_has_unknown_reason() -> None:
+def test_failure_of_old_format_has_unknown_reason_without_code_and_driver_logs() -> None:
     raw = (
         failed(command(), "boom", "SPARK_FAILED")
         .to_bytes()
-        .replace(b',"reason":"SPARK_FAILED"', b"")
+        .replace(b',"reason":"SPARK_FAILED","code":null,"driver_logs":null', b"")
     )
 
     parsed = parse_event(raw)
 
     assert isinstance(parsed, ExecutionFailed)
-    assert parsed.payload.reason == "UNKNOWN"
+    assert parsed.payload == Failure(error="boom")
+    assert (parsed.payload.reason, parsed.payload.code, parsed.payload.driver_logs) == (
+        "UNKNOWN",
+        None,
+        None,
+    )
 
 
 def test_controller_failure_carries_reason() -> None:

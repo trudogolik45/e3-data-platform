@@ -19,8 +19,9 @@ from e3.execution.workload import (
     WorkloadConfig,
     spark_application,
 )
-from e3.shared.contracts import ExecutionContext, ExecutionResult
+from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
 from e3.shared.messages import (
+    DriverLogs,
     ExecutionEvent,
     ExecutionFailed,
     ExecutionSucceeded,
@@ -57,9 +58,13 @@ class RecordedEvents:
 class StoredResults:
     def __init__(self) -> None:
         self.results: dict[str, ExecutionResult] = {}
+        self.errors: dict[str, ExecutionError] = {}
 
     async def fetch(self, context: ExecutionContext) -> ExecutionResult | None:
         return self.results.get(context.output_prefix)
+
+    async def fetch_error(self, context: ExecutionContext) -> ExecutionError | None:
+        return self.errors.get(context.output_prefix)
 
 
 def command(pod: PodSize | None = None) -> SubmitExecution:
@@ -261,6 +266,50 @@ async def test_failed_application_is_reported_failed_with_operator_error() -> No
     assert isinstance(events.sent[0], ExecutionFailed)
     assert "driver exited with 1" in events.sent[0].payload.error
     assert events.sent[0].payload.reason == "SPARK_FAILED"
+
+
+async def test_failed_block_with_its_error_is_reported_block_failed_with_its_message() -> None:
+    execution, applications, events, results = controller()
+    submit = command()
+    results.errors[submit.payload.context.output_prefix] = ExecutionError(
+        code="CAST_INVALID_INPUT",
+        message="колонка amount: значения не приводятся к long",
+        column="amount",
+        target_type="long",
+    )
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+
+    await execution.report()
+
+    [event] = events.sent
+    assert isinstance(event, ExecutionFailed)
+    assert event.payload.reason == "BLOCK_FAILED"
+    assert event.payload.code == "CAST_INVALID_INPUT"
+    assert event.payload.error.startswith("колонка amount: значения не приводятся к long")
+    assert "driver exited with 1" not in event.payload.error
+
+
+@pytest.mark.parametrize("block_error", [None, "блок упал"])
+async def test_failure_points_to_driver_logs(block_error: str | None) -> None:
+    execution, applications, events, results = controller()
+    submit = command()
+    if block_error:
+        results.errors[submit.payload.context.output_prefix] = ExecutionError(
+            code="INVALID_PARAMETERS", message=block_error
+        )
+    await execution.submit(submit)
+    applications.set_state(name(submit), "FAILED", error="driver exited with 1")
+
+    await execution.report()
+
+    [event] = events.sent
+    assert isinstance(event, ExecutionFailed)
+    logs = f"SparkApplication default/{name(submit)}, attempt_id {submit.attempt_id}"
+    assert logs in event.payload.error
+    assert event.payload.driver_logs == DriverLogs(
+        namespace="default", spark_application=name(submit), attempt_id=submit.attempt_id
+    )
 
 
 async def test_completed_application_without_block_result_is_reported_failed() -> None:

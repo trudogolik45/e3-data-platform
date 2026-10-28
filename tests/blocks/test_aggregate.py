@@ -1,6 +1,6 @@
 import pytest
 from pyspark.sql.types import DoubleType, LongType, StringType, StructField, StructType
-from spark_io import schema_of
+from spark_io import recognized_errors, schema_of
 
 from tests.blocks.conftest import block
 
@@ -68,8 +68,11 @@ def test_empty_group_by_on_empty_input_gives_one_row(spark) -> None:
 def test_sum_overflow_fails(spark) -> None:
     huge = spark.createDataFrame([("a", MAX_LONG, 0.0), ("a", 1, 0.0)], SCHEMA)
 
-    with pytest.raises(Exception, match=r"(?i)overflow"):
+    with pytest.raises(BlockError) as raised, recognized_errors():
         run(huge, [agg("qty", "sum")]).collect()
+
+    assert raised.value.execution_error.code == "ARITHMETIC_OVERFLOW"
+    assert raised.value.execution_error.message == "переполнение: long overflow"
 
 
 @pytest.mark.parametrize("function", ["sum", "avg"])

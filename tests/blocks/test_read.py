@@ -1,6 +1,6 @@
 import pytest
 from pyspark.sql import Row
-from spark_io import schema_of
+from spark_io import recognized_errors, schema_of
 
 from tests.blocks.conftest import block
 
@@ -30,11 +30,43 @@ def test_columns_without_types_stay_strings(spark) -> None:
     assert [c.type for c in schema_of(result).columns] == ["string", "string"]
 
 
-def test_value_that_does_not_cast_fails_instead_of_null(spark) -> None:
-    result = read.transform(rows(spark, ("1", "hello")), {"types": {"amount": "long"}})
+@pytest.mark.parametrize("target_type", ["long", "double"])
+def test_value_that_does_not_cast_fails_with_column_and_type_but_not_value(
+    spark, target_type
+) -> None:
+    result = read.transform(rows(spark, ("1", "hello")), {"types": {"amount": target_type}})
 
-    with pytest.raises(Exception, match="hello"):
+    with pytest.raises(BlockError) as raised, recognized_errors():
         result.collect()
+
+    error = raised.value.execution_error
+    assert (error.code, error.column, error.target_type) == (
+        "CAST_INVALID_INPUT",
+        "amount",
+        target_type,
+    )
+    assert error.message == f"колонка amount: значения не приводятся к {target_type}"
+    assert "hello" not in error.model_dump_json()
+
+
+def test_value_too_large_for_long_fails_with_column_and_type(spark) -> None:
+    result = read.transform(
+        rows(spark, ("1", "99999999999999999999")), {"types": {"amount": "long"}}
+    )
+
+    with pytest.raises(BlockError) as raised, recognized_errors():
+        result.collect()
+
+    assert (raised.value.execution_error.column, raised.value.execution_error.target_type) == (
+        "amount",
+        "long",
+    )
+
+
+def test_null_stays_null_when_cast(spark) -> None:
+    result = read.transform(rows(spark, ("1", "5"), ("2", None)), {"types": {"amount": "long"}})
+
+    assert [tuple(r) for r in result.collect()] == [("1", 5), ("2", None)]
 
 
 def test_types_for_missing_column_fail(spark) -> None:

@@ -99,15 +99,28 @@ class Empty(BaseModel):
 
 
 # Причина провала, которую Execution Controller выводит из терминального состояния Kubernetes.
-FailureReason = Literal["SPARK_FAILED", "SUBMISSION_FAILED", "NO_RESULT", "UNKNOWN"]
+# `BLOCK_FAILED` — блок сам сообщил ошибку в `error.json`.
+FailureReason = Literal["SPARK_FAILED", "SUBMISSION_FAILED", "BLOCK_FAILED", "NO_RESULT", "UNKNOWN"]
+
+
+class DriverLogs(BaseModel):
+    """Где искать логи driver попытки: URL нет, бэкенда логов нет."""
+
+    model_config = ConfigDict(frozen=True)
+
+    namespace: str
+    spark_application: str
+    attempt_id: UUID
 
 
 class Failure(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     error: str
-    # Сообщения без причины пришли от Controller старого формата.
+    # Сообщения без причины, кода и логов пришли от Controller старого формата.
     reason: FailureReason = "UNKNOWN"
+    code: str | None = Field(default=None, description="`code` из error.json блока")
+    driver_logs: DriverLogs | None = None
 
 
 class ExecutionStarted(_Envelope):
@@ -211,13 +224,20 @@ def succeeded(command: Command, result: ExecutionResult) -> ExecutionSucceeded:
     )
 
 
-def failed(command: Command, error: str, reason: FailureReason) -> ExecutionFailed:
+def failed(
+    command: Command,
+    error: str,
+    reason: FailureReason,
+    *,
+    code: str | None = None,
+    driver_logs: DriverLogs | None = None,
+) -> ExecutionFailed:
     return ExecutionFailed(
         event_id=_attempt_event_id(command, ExecutionFailed),
         node_run_id=command.node_run_id,
         attempt_id=command.attempt_id,
         trace_id=command.trace_id,
-        payload=Failure(error=error, reason=reason),
+        payload=Failure(error=error, reason=reason, code=code, driver_logs=driver_logs),
     )
 
 
