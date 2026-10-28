@@ -152,7 +152,9 @@ start_control_plane() {
   export E3_E2E_S3_ADDRESS="$MINIO_IN_KIND:9000"
   export E3_E2E_POSTGRES_ADDRESS="$(in_kind postgres):5432"
   export E3_E2E_KAFKA_ADDRESS="$(in_kind kafka):9092"
+  curl -sS -m 5 -o /dev/null -w "api before connect %{http_code}\n" http://localhost:8000/docs || true
   export E3_E2E_CONTROL_PLANE_API_ADDRESS="$(in_kind api):8000"
+  curl -sS -m 5 -o /dev/null -w "api after connect %{http_code}\n" http://localhost:8000/docs || true
 }
 
 diagnose_network() { # ВРЕМЕННО: диагностика CI
@@ -164,6 +166,10 @@ diagnose_network() { # ВРЕМЕННО: диагностика CI
   done
   for i in 1 2 3 4 5; do curl -sS -m 5 -o /dev/null -w "api %{http_code}\n" http://localhost:8000/docs || true; sleep 2; done
   curl -sS -m 5 -o /dev/null -w "minio %{http_code}\n" http://localhost:9000/minio/health/live || true
+  docker ps --format '{{.Names}} {{.Status}} {{.Ports}}'
+  docker exec "$(compose ps -q api)" python -c "import urllib.request as u; print('inside', u.urlopen('http://127.0.0.1:8000/docs').status)" || true
+  curl -sS -m 5 -o /dev/null -w "api via kind ip %{http_code}\n" "http://$E3_E2E_CONTROL_PLANE_API_ADDRESS/docs" || true
+  compose logs --tail=15 api
   sudo iptables -t nat -S 2>/dev/null | grep -E '8000|9000|DOCKER' | head -40 || true
 }
 
