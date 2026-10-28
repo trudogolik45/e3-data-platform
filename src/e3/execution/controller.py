@@ -18,8 +18,12 @@ Controller ничего не перезапускает: ретраи решае
 """
 
 import logging
+from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
+
+from opentelemetry.trace import Span
 
 from e3.execution.credentials import S3Keys
 from e3.execution.workload import (
@@ -37,7 +41,12 @@ from e3.execution.workload import (
     spark_application,
     workload_name,
 )
-from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
+from e3.shared.contracts import (
+    ExecutionContext,
+    ExecutionError,
+    ExecutionResult,
+    diagnostic_artifact_prefix,
+)
 from e3.shared.messages import (
     CancelExecution,
     Command,
@@ -54,7 +63,7 @@ from e3.shared.messages import (
     started,
     succeeded,
 )
-from e3.shared.tracing import traced
+from e3.shared.tracing import span, traced
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +76,6 @@ FAILURE_REASONS: dict[str, FailureReason] = {
     "SUBMISSION_FAILED": "SUBMISSION_FAILED",
 }
 TERMINAL_STATES = {COMPLETED, *FAILURE_REASONS}
-ARTIFACTS_PREFIX = "artifacts"
 LOG_CONTENT_TYPE = "text/plain; charset=utf-8"
 # Фазы pod'а, в которых он точно не работает; `Unknown` ничего не доказывает.
 FINISHED_PHASES = {"Succeeded", "Failed"}
@@ -157,8 +165,8 @@ class ExecutionController:
         self._config = config
 
     async def handle(self, command: Command) -> None:
-        """Логи обработки команды несут её `trace_id`."""
-        with traced(command.trace_id):
+        """Логи и спан обработки команды несут её `trace_id`."""
+        with span(f"handle {command.type}", command.trace_id, attributes=command.span_attributes()):
             await self._handle(command)
             log.info("%s попытки %s обработана", command.type, command.attempt_id)
 
@@ -256,7 +264,8 @@ class ExecutionController:
         outcome = await self._outcome(application)
         if outcome is None:
             return
-        await self._send(outcome)
+        with _attempt_span(application, outcome):
+            await self._send(outcome)
         await self._applications.mark_reported(application["metadata"]["name"], Reported.DONE)
 
     async def _send(self, event: ExecutionEvent) -> None:
@@ -318,7 +327,8 @@ class ExecutionController:
 
 def diagnostic_artifact_key(command: SubmitExecution, pod_log: PodLog) -> str:
     """Ключ выводится из попытки и pod'а: повторное сохранение перезаписывает тот же объект."""
-    return f"{ARTIFACTS_PREFIX}/{command.node_run_id}/{command.attempt_id}/{pod_log.name}.log"
+    prefix = diagnostic_artifact_prefix(command.node_run_id, command.attempt_id)
+    return f"{prefix}/{pod_log.name}.log"
 
 
 def _command(application: dict[str, Any]) -> SubmitExecution:
@@ -356,3 +366,19 @@ def _live(application: dict[str, Any]) -> bool:
 
 def _state(application: dict[str, Any]) -> dict[str, Any]:
     return application.get("status", {}).get("applicationState", {})
+
+
+def _attempt_span(
+    application: dict[str, Any], outcome: ExecutionEvent
+) -> AbstractContextManager[Span]:
+    """Спан попытки Spark: от создания её ресурса до доказанного итога.
+
+    Строится целиком в момент итога, из метаданных ресурса: переживает рестарт контроллера.
+    """
+    created = application["metadata"].get("creationTimestamp")
+    return span(
+        "Spark attempt",
+        outcome.trace_id,
+        start_time=datetime.fromisoformat(created) if created else None,
+        attributes=outcome.span_attributes() | {"outcome": outcome.type},
+    )

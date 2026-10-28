@@ -7,9 +7,15 @@ lease Upload захватывает следующий `complete` с новым 
 обработчик уже ничего не может записать. `version_id` назначается при первом
 захвате и не меняется, поэтому продолжение пишет в те же ключи и не создаёт
 второй объект.
+
+Через срок хранения от создания Upload его `staging/uploads/{upload_id}/`
+удаляется, кроме Upload с действующей lease. Опубликованная версия к этому
+времени уже скопирована в `datasets/`, а незавершённый Upload больше нельзя
+завершить: нужен новый.
 """
 
 import asyncio
+import logging
 from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -38,6 +44,8 @@ from e3.shared.storage import (
     StorageUnavailable,
 )
 
+log = logging.getLogger(__name__)
+
 DATA_FILE = "data/source.csv"
 
 
@@ -54,6 +62,10 @@ class UploadNotFound(Exception):
 
 class FileNotUploaded(Exception):
     """Файл ещё не загружен по presigned URL."""
+
+
+class UploadExpired(Exception):
+    """Срок хранения Upload истёк и его staging удалён: нужен новый Upload."""
 
 
 @dataclass(frozen=True)
@@ -80,8 +92,12 @@ class _Claim:
     declared_checksum_sha256: str
 
 
+def staging_prefix(upload_id: UUID) -> str:
+    return f"staging/uploads/{upload_id}"
+
+
 def staging_key(upload_id: UUID) -> str:
-    return f"staging/uploads/{upload_id}/source.csv"
+    return f"{staging_prefix(upload_id)}/source.csv"
 
 
 def version_prefix(dataset_id: UUID, version_id: UUID) -> str:
@@ -100,10 +116,12 @@ class Uploads:
         *,
         lease: timedelta,
         url_ttl_seconds: int,
+        retention: timedelta,
     ) -> None:
         self._sessions = sessions
         self._storage = storage
         self._lease = lease
+        self._retention = retention
         self._url_ttl_seconds = url_ttl_seconds
 
     async def start(self, dataset_id: UUID, *, checksum_sha256: str) -> StartedUpload:
@@ -140,12 +158,50 @@ class Uploads:
     async def discard_staging(self, upload_id: UUID) -> None:
         await self._storage.delete(staging_key(upload_id))
 
+    async def purge_expired(self) -> int:
+        """Возвращает число Upload, staging которых удалён по сроку хранения."""
+        return sum([await self._purge(upload_id) for upload_id in await self._expired()])
+
+    async def _expired(self) -> list[UUID]:
+        async with self._sessions() as session:
+            found = await session.scalars(
+                select(UploadRow.id).where(
+                    UploadRow.staging_purged_at.is_(None),
+                    UploadRow.created_at < func.now() - self._retention,
+                )
+            )
+            return list(found)
+
+    async def _purge(self, upload_id: UUID) -> bool:
+        """Строка заблокирована, пока удаляется staging: `complete` не захватит Upload посреди.
+
+        Сбой хранилища пишется в лог и повторится следующим проходом.
+        """
+        try:
+            async with self._sessions.begin() as session:
+                row = await session.scalar(
+                    select(UploadRow).where(UploadRow.id == upload_id).with_for_update()
+                )
+                now = (await session.execute(select(func.now()))).scalar_one()
+                if row is None or row.staging_purged_at is not None or _leased(row, now):
+                    return False
+                await self._storage.delete_prefix(f"{staging_prefix(upload_id)}/")
+                if row.state == UploadState.COMPLETING:
+                    _finish(row, UploadState.PENDING)
+                row.staging_purged_at = now
+        except Exception:
+            log.exception("staging Upload %s не удалён, повторится", upload_id)
+            return False
+        return True
+
     async def _claim(self, dataset_id: UUID, upload_id: UUID) -> UploadStatus | _Claim:
         async with self._sessions.begin() as session:
             row = await _lock(session, dataset_id, upload_id)
             now = (await session.execute(select(func.now()))).scalar_one()
             if not _claimable(row, now):
                 return await _status(session, row)
+            if row.staging_purged_at is not None:
+                raise UploadExpired(str(upload_id))
             claim = _Claim(
                 upload_id=row.id,
                 dataset_id=row.dataset_id,
@@ -259,6 +315,11 @@ def _claimable(row: UploadRow, now: datetime) -> bool:
         return True
     lease_expired = row.lease_expires_at is None or row.lease_expires_at <= now
     return row.state == UploadState.COMPLETING and lease_expired
+
+
+def _leased(row: UploadRow, now: datetime) -> bool:
+    """Upload сейчас обрабатывает живой `complete`."""
+    return row.state == UploadState.COMPLETING and not _claimable(row, now)
 
 
 def _holds(row: UploadRow, claim: _Claim) -> bool:

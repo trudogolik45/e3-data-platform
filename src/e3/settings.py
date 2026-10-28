@@ -1,10 +1,12 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from e3.shared.messages import PodSize
+
+SECONDS_PER_DAY = 86400
 
 
 class Settings(BaseSettings):
@@ -35,9 +37,10 @@ class Settings(BaseSettings):
     runs_idle_seconds: float = Field(default=0.5, gt=0)
     # Сколько попытка может молчать, прежде чем Run Orchestrator спросит о ней Controller.
     reconcile_after_seconds: int = Field(default=600, gt=0)
-    # Сколько хранится staging попыток после завершения PipelineRun (PRD §8)
-    # и как часто фоновая очистка его ищет.
+    # Сколько хранятся staging попыток и их Diagnostic Artifact после завершения
+    # PipelineRun (PRD §8, ADR-0002) и как часто фоновая очистка их ищет.
     staging_retention_days: float = Field(default=7, gt=0)
+    artifact_retention_days: float = Field(default=30, gt=0)
     staging_purge_period_seconds: float = Field(default=3600, gt=0)
 
     # Размер pod'а попытки, driver и executor одинаковы: CPU-запрос в нотации Kubernetes
@@ -53,10 +56,19 @@ class Settings(BaseSettings):
 
     upload_url_ttl_seconds: int = 3600
     upload_lease_seconds: float = Field(default=300, gt=0)
+    # Сколько хранится `staging/uploads/{id}/` от создания Upload. Дольше presigned URL:
+    # иначе клиент перезапишет уже очищенный объект, и его никто не удалит.
+    upload_retention_days: float = Field(default=7, gt=0)
 
     dev_organization_id: UUID = UUID("00000000-0000-4000-8000-000000000001")
     dev_project_id: UUID = UUID("00000000-0000-4000-8000-000000000002")
     dev_user_id: UUID = UUID("00000000-0000-4000-8000-000000000003")
+
+    @model_validator(mode="after")
+    def _upload_retention_outlives_url(self) -> "Settings":
+        if self.upload_retention_days * SECONDS_PER_DAY <= self.upload_url_ttl_seconds:
+            raise ValueError("upload_retention_days должен быть дольше upload_url_ttl_seconds")
+        return self
 
     def pod_size(self) -> PodSize:
         return PodSize(

@@ -1,4 +1,5 @@
-"""Срок хранения staging: данные попыток удаляются через 7 суток после завершения PipelineRun.
+"""Срок хранения после завершения PipelineRun: данные попыток в staging — 7 суток,
+Diagnostic Artifact попыток — 30.
 
 Время двигает тест: сдвигает назад `finished_at` запуска в PostgreSQL.
 """
@@ -21,8 +22,9 @@ from tests.logs import TraceLogs
 
 pytestmark = pytest.mark.integration
 
-# Срок хранения staging по умолчанию (PRD §8).
+# Сроки хранения по умолчанию (PRD §8, ADR-0002).
 RETENTION = timedelta(days=7)
+ARTIFACT_RETENTION = timedelta(days=30)
 
 
 def put(s3: S3Client, settings: Settings, *keys: str) -> None:
@@ -197,3 +199,52 @@ async def test_purge_is_logged_with_trace_id_of_its_run(
         f"staging попытки {failed.attempt_id} не удалён, повторится",
         f"staging PipelineRun {run_id} удалён",
     ]
+
+
+def put_logs(plant: Plant, *attempts: SubmitExecution) -> list[str]:
+    """Diagnostic Artifact попыток, как их кладёт Execution Controller."""
+    keys = [f"artifacts/{a.node_run_id}/{a.attempt_id}/driver.log" for a in attempts]
+    put(plant.s3, plant.settings, *keys)
+    return keys
+
+
+def existing(plant: Plant, keys: list[str]) -> list[str]:
+    return [key for key in keys if object_exists(plant.s3, plant.settings, key)]
+
+
+async def test_diagnostic_artifacts_of_every_attempt_are_purged_after_their_retention(
+    plant: Plant,
+) -> None:
+    run_id, attempts = await published_after_retry(plant)
+    logs = put_logs(plant, *attempts)
+    await finished_ago(plant, run_id, ARTIFACT_RETENTION + timedelta(hours=1))
+
+    purged = await plant.orchestrator.purge_artifacts()
+
+    assert purged == 1
+    assert existing(plant, logs) == []
+
+
+async def test_diagnostic_artifacts_outlive_staging_of_their_run(plant: Plant) -> None:
+    run_id, attempts = await published_after_retry(plant)
+    logs = put_logs(plant, *attempts)
+    await finished_ago(plant, run_id, RETENTION + timedelta(hours=1))
+
+    await plant.orchestrator.purge_staging()
+    await plant.orchestrator.purge_artifacts()
+
+    assert [attempt_keys(plant, attempt) for attempt in attempts] == [[], []]
+    assert existing(plant, logs) == logs
+
+
+async def test_repeated_artifact_purge_touches_nothing_already_purged(plant: Plant) -> None:
+    run_id, attempts = await published_after_retry(plant)
+    put_logs(plant, *attempts)
+    await finished_ago(plant, run_id, ARTIFACT_RETENTION + timedelta(hours=1))
+    await plant.orchestrator.purge_artifacts()
+    storage = storage_like(CountingStorage, plant.settings)
+    storage.prefixes = []
+
+    again = await create_app(plant.settings, storage=storage).state.runs.purge_artifacts()
+
+    assert (again, storage.prefixes) == (0, [])

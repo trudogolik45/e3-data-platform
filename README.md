@@ -48,11 +48,12 @@ flowchart LR
 - Отмена запусков и доступ по ролям проекта через OIDC.
 - Лимиты Project: 5 активных запусков и квота CPU и RAM на попытки (`E3_PROJECT_QUOTA_CPU_MILLICORES`, `E3_PROJECT_QUOTA_MEMORY_MIB`; по умолчанию — 10 попыток). Размер попытки — `E3_SPARK_CORE_REQUEST` и `E3_SPARK_MEMORY_MIB` Control Plane.
 - Свои S3-ключи у каждой попытки (Attempt Credentials): MinIO STS, чтение только её входов, запись только в её `staging/executions/{attempt_id}/`. Срок жизни — `E3_ATTEMPT_CREDENTIALS_SECONDS` Execution Controller (по умолчанию 12 ч). Сам контроллер ходит в MinIO пользователем `e3-execution-controller` с узкой политикой `scripts/minio/execution-controller-policy.json`, а не root.
-- Очистка staging: данные попыток удаляются через 7 суток после завершения запуска (`E3_STAGING_RETENTION_DAYS`); опубликованные версии и загрузки не трогаются.
-- Логи driver и executor каждой завершённой, упавшей или отменённой попытки в `artifacts/{node_run_id}/{attempt_id}/` (Diagnostic Artifact). Пишет их Execution Controller, а не блок.
+- Очистка staging: данные попыток удаляются через 7 суток после завершения запуска (`E3_STAGING_RETENTION_DAYS`); опубликованные версии не трогаются. Файлы загрузок (`staging/uploads/`) удаляются через 7 суток после начала загрузки (`E3_UPLOAD_RETENTION_DAYS`); завершить такую загрузку уже нельзя.
+- Логи driver и executor каждой завершённой, упавшей или отменённой попытки в `artifacts/{node_run_id}/{attempt_id}/` (Diagnostic Artifact). Пишет их Execution Controller, а не блок; удаляет Control Plane через 30 суток после завершения запуска (`E3_ARTIFACT_RETENTION_DAYS`).
+- Сетевая изоляция pod'ов попыток: `NetworkPolicy` из `deploy/kubernetes/attempt-network-policy.yaml` оставляет им только DNS кластера, S3, Kubernetes API и связь driver ↔ executor. Нет интернета, PostgreSQL, Kafka и API Control Plane. **Политику применяет развёртывание** в namespace попыток, подставив адреса S3 и API server (`@S3_CIDR@`, `@S3_PORT@`, `@KUBE_API_IP_BLOCKS@` (ipBlock каждого endpoint'а API server), `@KUBE_API_PORT@`); Execution Controller её не создаёт. CNI кластера должен соблюдать NetworkPolicy, включая egress и `ipBlock`.
 - CI на каждый PR и e2e-прогон на kind на каждый push в `main`.
 
-Дальше по плану: сетевая изоляция workload'ов, затем Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).
+Дальше по плану: Iceberg, Trino и Superset. План — в [Issues](https://github.com/trudogolik45/n3-data-platform/issues).
 
 ## Стек
 
@@ -63,10 +64,10 @@ Python 3.13, FastAPI, SQLAlchemy, PostgreSQL, Kafka (KRaft), MinIO / S3, Apache 
 Нужны Docker и [uv](https://docs.astral.sh/uv/).
 
 ```sh
-docker compose up -d --build   # API на :8000, MinIO на :9000, Kafka на :9092
+docker compose up -d --build   # API на :8000, MinIO на :9000, Kafka на :9092, Jaeger UI на :16686
 ```
 
-Документация API — http://localhost:8000/docs.
+Документация API — http://localhost:8000/docs. Трасса запуска — `http://localhost:16686/trace/<pipeline_run_id без дефисов>`: от `POST /pipeline-runs` через outbox, Kafka и Execution Controller до публикации. Сервисы шлют спаны OpenTelemetry по `OTEL_EXPORTER_OTLP_ENDPOINT`; без неё не шлют.
 
 Вход — через локальный OIDC-провайдер `mock-oauth2-server` на :8080: он выдаёт токен любому
 `client_id`. Organization и Project создаёт команда платформы токеном `E3_PLATFORM_TOKEN`

@@ -1,5 +1,6 @@
 """Kafka-клиенты обеих плоскостей: надёжная отправка и чтение пачками (at-least-once).
 
+Запись обрабатывается в контексте спана отправителя из её заголовков.
 Offset записи коммитится только после её обработки. Сбой обработки возвращает
 партицию к упавшей записи: она придёт снова в следующей пачке, а не
 потеряется. Повторы гасит inbox или идемпотентность получателя.
@@ -9,6 +10,8 @@ from collections.abc import Awaitable, Callable
 from typing import cast
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, ConsumerRecord, TopicPartition
+
+from e3.shared.tracing import continued
 
 type Record = ConsumerRecord[bytes, bytes]
 type RecordHandler = Callable[[Record], Awaitable[None]]
@@ -64,7 +67,8 @@ async def _consume_partition(
     """Обрабатывает записи партиции по порядку до первого сбоя."""
     for done, record in enumerate(records):
         try:
-            await handle(record)
+            with continued(record.headers):
+                await handle(record)
         except Exception as error:
             return done, error
     return len(records), None

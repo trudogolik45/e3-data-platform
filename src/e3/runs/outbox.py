@@ -22,7 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from e3.runs.models import InboxRow, OutboxRow
 from e3.shared.messages import COMMANDS_TOPIC, Command, trace_headers
-from e3.shared.tracing import traced
+from e3.shared.tracing import span
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ class OutboxRelay:
         return len(sent)
 
     async def _send(self, message: "_Message") -> None:
-        with traced(message.trace_id):
+        with span(f"send {message.type}", message.trace_id, attributes=message.attributes()):
             await self._publisher.send(
                 message.topic,
                 key=message.key,
@@ -141,6 +141,9 @@ class _Message:
     type: str
     attempt_id: str
     trace_id: str
+
+    def attributes(self) -> dict[str, str]:
+        return {"attempt_id": self.attempt_id}
 
     @classmethod
     def of(cls, row: OutboxRow) -> "_Message":

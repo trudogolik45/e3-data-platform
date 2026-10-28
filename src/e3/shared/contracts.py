@@ -19,6 +19,15 @@ RESULT_FILE = "result.json"
 ERROR_FILE = "error.json"
 ERROR_FILE_LIMIT = 4096
 
+# Diagnostic Artifact попытки: логи её pod'ов кладёт сюда Execution Controller,
+# а через срок хранения удаляет Control Plane.
+ARTIFACTS_PREFIX = "artifacts"
+
+
+def diagnostic_artifact_prefix(node_run_id: UUID, attempt_id: UUID) -> str:
+    return f"{ARTIFACTS_PREFIX}/{node_run_id}/{attempt_id}"
+
+
 # Неизменяемая ссылка на образ: `<repo>@sha256:<64 hex>`. Теги вроде `:latest` не годятся.
 OCI_DIGEST_PATTERN = r"^[^\s@]+@sha256:[0-9a-f]{64}$"
 

@@ -1,6 +1,7 @@
 import pytest
 
 from tests.logs import trace_logs as trace_logs  # фикстура unit-тестов
+from tests.spans import spans as spans  # фикстура unit-тестов
 
 UNIT_S3_SECRET = "unit-s3-secret"
 

@@ -36,6 +36,8 @@ class PipelineRunRow(Base):
     finished_at: Mapped[datetime | None]
     # Удалён staging всех попыток запуска: срок хранения истёк.
     staging_purged_at: Mapped[datetime | None]
+    # Удалены Diagnostic Artifact всех попыток запуска: срок хранения истёк.
+    artifacts_purged_at: Mapped[datetime | None]
     # Initiator: его Membership перепроверяется перед каждой Publication (ADR-0004).
     initiated_by_user_id: Mapped[UUID]
     # Первый NodeRun, ушедший в FAILED: первопричина Fail-fast.

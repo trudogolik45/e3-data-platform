@@ -153,5 +153,5 @@ _Avoid_: Metadata file, index
 _Avoid_: Output, результат
 
 **Diagnostic Artifact**:
-Artifact с логами driver и executor одной ExecutionAttempt под `artifacts/{node_run_id}/{attempt_id}/`. Пишет его Execution Controller после итога попытки — успеха, падения или отмены, — а не сам блок. Структурированная ошибка блока сюда не входит.
+Artifact с логами driver и executor одной ExecutionAttempt под `artifacts/{node_run_id}/{attempt_id}/`. Пишет его Execution Controller после итога попытки — успеха, падения или отмены, — а не сам блок. Удаляется через 30 суток после завершения PipelineRun. Структурированная ошибка блока сюда не входит.
 _Avoid_: Лог блока, Spark event log

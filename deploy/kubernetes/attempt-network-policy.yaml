@@ -1,0 +1,57 @@
+# Сетевая изоляция pod'ов попыток (PRD §9, ADR-0001): driver и executor каждой
+# ExecutionAttempt несут метку `e3.io/attempt-id` от Execution Controller. Политика
+# выбирает их и запрещает весь трафик, кроме:
+#   - исходящего в DNS кластера, в S3 и в Kubernetes API server (driver создаёт executor'ы);
+#   - трафика между pod'ами попыток в этом namespace (driver ↔ executor).
+# Интернета, PostgreSQL, Kafka и API Control Plane у блоков нет.
+#
+# Применяет развёртывание в namespace попыток (`E3_SPARK_NAMESPACE`), подставив адреса:
+#   @S3_CIDR@ @S3_PORT@                 — S3 endpoint, который видят pod'ы попыток; вне кластера:
+#                                        к pod IP многие CNI `ipBlock` не применяют;
+#   @KUBE_API_IP_BLOCKS@ @KUBE_API_PORT@ — все endpoint'ы API server (`kubectl get endpointslice
+#                                        kubernetes`) списком `{ ipBlock: { cidr: "<ip>/32" } }` через
+#                                        запятую: политика видит адрес уже после DNAT сервиса `kubernetes`.
+# Execution Controller её не создаёт. В E2E её применяет scripts/e2e.sh.
+#
+# Ограничение: CNI применяет политику к новому pod'у с задержкой (на kindnet — около
+# секунды), и в это окно его соединения проходят. Код блока запускается позже, после
+# JVM и SparkContext.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: e3-attempt-isolation
+spec:
+  podSelector:
+    matchExpressions:
+      - key: e3.io/attempt-id
+        operator: Exists
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: e3.io/attempt-id
+                operator: Exists
+  egress:
+    - to:
+        - podSelector:
+            matchExpressions:
+              - key: e3.io/attempt-id
+                operator: Exists
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - ipBlock: { cidr: "@S3_CIDR@" }
+      ports:
+        - { protocol: TCP, port: @S3_PORT@ }
+    - to: [@KUBE_API_IP_BLOCKS@]
+      ports:
+        - { protocol: TCP, port: @KUBE_API_PORT@ }

@@ -39,6 +39,8 @@ class UploadRow(Base):
     lease_expires_at: Mapped[datetime | None]
     error: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    # Удалён `staging/uploads/{id}/`: срок хранения от `created_at` истёк.
+    staging_purged_at: Mapped[datetime | None]
 
 
 class DatasetVersionRow(Base):

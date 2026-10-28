@@ -73,9 +73,16 @@ services:
             "email": "$${clientId}@e3.local", "email_verified": true}}]}]}
     ports: ["8080:8080"]
 
+  # Бэкенд трасс OpenTelemetry: OTLP HTTP на :4318, UI на :16686. Трассы в памяти:
+  # рестарт Jaeger их стирает.
+  jaeger:
+    image: jaegertracing/jaeger:2.22.0
+    ports: ["4318:4318", "16686:16686"]
+
   api:
     build: .
     depends_on:
+      jaeger: { condition: service_started }
       postgres: { condition: service_healthy }
       kafka: { condition: service_healthy }
       minio-init: { condition: service_completed_successfully }
@@ -99,4 +106,5 @@ services:
       E3_SPARK_CORE_REQUEST: ${E3_SPARK_CORE_REQUEST:-1}
       # Только для локальной разработки: токен admin API регистрации блоков.
       E3_PLATFORM_TOKEN: dev-platform-token
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
     ports: ["8000:8000"]

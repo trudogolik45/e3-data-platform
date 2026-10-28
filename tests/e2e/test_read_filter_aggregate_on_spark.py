@@ -40,6 +40,7 @@ from tests.e2e.scenario import (
     rows,
     start,
 )
+from tests.e2e.stand import jaeger_trace
 from tests.integration.conftest import Api
 
 API_URL = os.environ.get("E3_E2E_API_URL")
@@ -113,6 +114,20 @@ async def test_states_follow_same_chains_as_with_fake_controller(finished: Finis
         assert trace.nodes[node_id][-1] == "SUCCEEDED", trace
     assert follows(trace.nodes["publish"], PUBLISH_CHAIN), trace
     assert trace.nodes["publish"][-1] == "SUCCEEDED", trace
+
+
+async def test_run_is_one_trace_in_jaeger_from_request_to_publication(
+    finished: FinishedRun,
+) -> None:
+    found = await jaeger_trace(
+        finished.run["pipeline_run_id"], "POST /pipeline-runs", "Spark attempt", "publish NodeRun"
+    )
+
+    span_ids = {span.span_id for span in found}
+    assert [span.operation for span in found if span.parent is None] == ["POST /pipeline-runs"]
+    assert all(span.parent in span_ids for span in found if span.parent)
+    assert {span.service for span in found} == {"e3-api", "e3-execution-controller"}
+    assert sum(span.operation == "Spark attempt" for span in found) >= len(BLOCKS)
 
 
 async def test_each_succeeded_attempt_leaves_driver_and_executor_logs(

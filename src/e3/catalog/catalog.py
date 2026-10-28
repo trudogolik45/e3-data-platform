@@ -23,10 +23,15 @@ class Catalog:
         *,
         upload_lease: timedelta,
         upload_url_ttl_seconds: int,
+        upload_retention: timedelta,
     ) -> None:
         self._sessions = sessions
         self._uploads = Uploads(
-            sessions, storage, lease=upload_lease, url_ttl_seconds=upload_url_ttl_seconds
+            sessions,
+            storage,
+            lease=upload_lease,
+            url_ttl_seconds=upload_url_ttl_seconds,
+            retention=upload_retention,
         )
         self._publications = Publications(sessions, storage)
 
@@ -56,6 +61,10 @@ class Catalog:
 
     async def discard_staging(self, upload_id: UUID) -> None:
         await self._uploads.discard_staging(upload_id)
+
+    async def purge_expired_uploads(self) -> int:
+        """Возвращает число Upload, staging которых удалён по сроку хранения."""
+        return await self._uploads.purge_expired()
 
     async def list_versions(self, dataset_id: UUID) -> list[DatasetVersion]:
         async with self._sessions() as session:
