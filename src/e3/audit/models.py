@@ -24,8 +24,13 @@ class AuditEventRow(Base):
     occurred_at: Mapped[datetime] = mapped_column(server_default=func.now())
     action: Mapped[str] = mapped_column(String(32))
     outcome: Mapped[str] = mapped_column(String(16))
-    user_id: Mapped[UUID]
-    project_id: Mapped[UUID]
-    object_id: Mapped[UUID]
+    # NULL — Platform Team.
+    user_id: Mapped[UUID | None]
+    # NULL — создание Organization.
+    project_id: Mapped[UUID | None]
+    # NULL — отказ в выдаче Membership по email: пользователя не ищут.
+    object_id: Mapped[UUID | None]
+    role: Mapped[str | None] = mapped_column(String(16))
+    previous_role: Mapped[str | None] = mapped_column(String(16))
     dedup_key: Mapped[str | None]
     trace_id: Mapped[str | None]

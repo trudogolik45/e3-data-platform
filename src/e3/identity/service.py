@@ -12,6 +12,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from e3 import audit
 from e3.identity.access import Principal, Role
 from e3.identity.models import MembershipRow, OrganizationRow, ProjectRow, UserRow
 from e3.identity.tokens import Identity
@@ -128,12 +129,22 @@ class IdentityService:
         return found[0]
 
     async def create_organization(self, name: str) -> UUID:
+        """Organization от имени Platform Team; Audit Event — в той же транзакции."""
         organization_id = uuid4()
         async with self._sessions.begin() as session:
             session.add(OrganizationRow(id=organization_id, name=name))
+            await audit.record(
+                session,
+                audit.AuditAction.ORGANIZATION_CREATE,
+                user_id=None,
+                project_id=None,
+                object_id=organization_id,
+                dedup_key=str(organization_id),
+            )
         return organization_id
 
     async def create_project(self, organization_id: UUID, name: str, *, admin: UUID) -> UUID:
+        """Project и первый Admin от Platform Team; оба Audit Event — в той же транзакции."""
         project_id = uuid4()
         async with self._sessions.begin() as session:
             if await session.get(OrganizationRow, organization_id) is None:
@@ -143,6 +154,22 @@ class IdentityService:
             session.add(ProjectRow(id=project_id, organization_id=organization_id, name=name))
             await session.flush()
             session.add(MembershipRow(project_id=project_id, user_id=admin, role=Role.ADMIN))
+            await audit.record(
+                session,
+                audit.AuditAction.PROJECT_CREATE,
+                user_id=None,
+                project_id=project_id,
+                object_id=project_id,
+                dedup_key=str(project_id),
+            )
+            await _record_membership(
+                session,
+                audit.AuditAction.MEMBERSHIP_GRANT,
+                by=None,
+                project_id=project_id,
+                user_id=admin,
+                role=Role.ADMIN,
+            )
         return project_id
 
     async def members(self, project_id: UUID) -> list[Member]:
@@ -155,7 +182,8 @@ class IdentityService:
             )
             return [Member(row.user_id, email, Role(row.role)) for row, email in rows]
 
-    async def add_member(self, project_id: UUID, user_id: UUID, role: Role) -> None:
+    async def add_member(self, project_id: UUID, user_id: UUID, role: Role, *, by: UUID) -> None:
+        """Выдаёт Membership от имени Admin `by`; Audit Event — в той же транзакции."""
         async with self._sessions.begin() as session:
             await _lock_project(session, project_id)
             if await session.get(UserRow, user_id) is None:
@@ -167,19 +195,48 @@ class IdentityService:
                 await session.flush()
             except IntegrityError:
                 raise MemberExists(str(user_id)) from None
+            await _record_membership(
+                session,
+                audit.AuditAction.MEMBERSHIP_GRANT,
+                by=by,
+                project_id=project_id,
+                user_id=user_id,
+                role=role,
+            )
 
-    async def change_role(self, project_id: UUID, user_id: UUID, role: Role) -> None:
+    async def change_role(self, project_id: UUID, user_id: UUID, role: Role, *, by: UUID) -> None:
+        """Меняет Role от имени Admin `by`; Audit Event — в той же транзакции."""
         async with self._sessions.begin() as session:
             member = await _locked_member(session, project_id, user_id)
             if role != Role.ADMIN:
                 await _keep_an_admin(session, member)
+            previous_role = Role(member.role)
             member.role = role
+            await _record_membership(
+                session,
+                audit.AuditAction.MEMBERSHIP_CHANGE_ROLE,
+                by=by,
+                project_id=project_id,
+                user_id=user_id,
+                role=role,
+                previous_role=previous_role,
+            )
 
-    async def remove_member(self, project_id: UUID, user_id: UUID) -> None:
+    async def remove_member(self, project_id: UUID, user_id: UUID, *, by: UUID) -> None:
+        """Отзывает Membership от имени Admin `by`; Audit Event — в той же транзакции."""
         async with self._sessions.begin() as session:
             member = await _locked_member(session, project_id, user_id)
             await _keep_an_admin(session, member)
             await session.delete(member)
+            await _record_membership(
+                session,
+                audit.AuditAction.MEMBERSHIP_REVOKE,
+                by=by,
+                project_id=project_id,
+                user_id=user_id,
+                role=None,
+                previous_role=Role(member.role),
+            )
 
     async def ensure_dev(self, *, user_id: UUID, organization_id: UUID, project_id: UUID) -> None:
         """dev-режим: один Organization, один Project, его Admin — идемпотентно."""
@@ -192,6 +249,29 @@ class IdentityService:
             ):
                 await session.merge(row)
                 await session.flush()
+
+
+async def _record_membership(
+    session: AsyncSession,
+    action: audit.AuditAction,
+    *,
+    by: UUID | None,
+    project_id: UUID,
+    user_id: UUID,
+    role: Role | None,
+    previous_role: Role | None = None,
+) -> None:
+    """Каждое изменение Membership — своя запись: `dedup_key` нет. `by = None` — Platform Team."""
+    await audit.record(
+        session,
+        action,
+        user_id=by,
+        project_id=project_id,
+        object_id=user_id,
+        dedup_key=None,
+        role=role,
+        previous_role=previous_role,
+    )
 
 
 async def _lock_project(session: AsyncSession, project_id: UUID) -> None:
