@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # E2E на настоящем Spark (kind + Kubeflow Spark Operator): `Read → Filter →
 # Aggregate → Publish Dataset`, Attempt Fence, ретрай пропавшей попытки, повторный
-# POST и рестарт каждого компонента посреди запуска.
+# POST, рестарт каждого компонента посреди запуска и сетевая изоляция pod'ов попыток.
 #
 # Поднимает kind с локальным OCI registry и Spark Operator, Control Plane через
-# docker compose, собирает и пушит образы блоков, регистрирует их digest через
-# `e3-register-block`, запускает `e3-execution-controller` и гоняет tests/e2e.
+# docker compose, применяет NetworkPolicy попыток, собирает и пушит образы блоков,
+# регистрирует их digest через `e3-register-block`, запускает
+# `e3-execution-controller` и гоняет tests/e2e.
 # Тесты рестартов перезапускают сервисы compose и сам контроллер: его pid — в
 # $WORK/controller.pid, по нему же контроллер останавливается в конце.
 # В конце всё разбирает; E3_E2E_KEEP=1 оставляет стенд для отладки.
@@ -25,6 +26,7 @@ REGISTRY=e3-kind-registry
 REGISTRY_PORT=5001 # 5000 на macOS занят AirPlay
 BLOCKS=(read filter aggregate)
 CONTROLLER_STOP_SECONDS=30
+NETWORK_POLICY=deploy/kubernetes/attempt-network-policy.yaml
 PLATFORM_TOKEN=dev-platform-token # E3_PLATFORM_TOKEN сервиса api в docker-compose.yml
 
 export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
@@ -37,6 +39,8 @@ export E3_RECONCILE_AFTER_SECONDS=15
 # Размер pod'а задаёт Control Plane: на 2 vCPU раннера CI целое ядро на driver
 # и executor не помещается рядом с системой kind.
 export E3_SPARK_CORE_REQUEST=250m
+# Образ проб сети в tests/e2e/network.py.
+export E3_E2E_PROBE_IMAGE=busybox:1.37
 export PATH="$CACHE/bin:$PATH"
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -140,10 +144,33 @@ start_control_plane() {
   # Топики создаёт Run Orchestrator при старте API; controller слушает уже готовые.
   until compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
     --list | grep -qx e3.execution.commands.v1; do sleep 1; done
-  local minio
-  minio=$(compose ps -q minio)
-  connect_to_kind "$minio"
-  MINIO_IN_KIND=$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$minio")
+  MINIO_IN_KIND=$(in_kind minio)
+  # PostgreSQL, Kafka и API тоже в сети kind: без этого запрет NetworkPolicy
+  # выполнялся бы сам собой из-за недоступности, а тест его не проверил бы.
+  export E3_E2E_S3_ADDRESS="$MINIO_IN_KIND:9000"
+  export E3_E2E_POSTGRES_ADDRESS="$(in_kind postgres):5432"
+  export E3_E2E_KAFKA_ADDRESS="$(in_kind kafka):9092"
+  export E3_E2E_CONTROL_PLANE_API_ADDRESS="$(in_kind api):8000"
+}
+
+# Подключает сервис compose к сети kind и печатает его адрес в ней.
+in_kind() {
+  local container
+  container=$(compose ps -q "$1")
+  connect_to_kind "$container"
+  docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$container"
+}
+
+apply_network_policy() {
+  log "NetworkPolicy попыток ($NETWORK_POLICY)"
+  local api_ip api_port
+  api_ip=$(kubectl get endpointslice kubernetes -o jsonpath='{.endpoints[0].addresses[0]}')
+  api_port=$(kubectl get endpointslice kubernetes -o jsonpath='{.ports[0].port}')
+  sed -e "s|@S3_CIDR@|$MINIO_IN_KIND/32|" -e "s|@S3_PORT@|9000|" \
+    -e "s|@KUBE_API_CIDR@|$api_ip/32|" -e "s|@KUBE_API_PORT@|$api_port|" \
+    "$ROOT/$NETWORK_POLICY" | kubectl apply -n default -f -
+  docker pull -q "$E3_E2E_PROBE_IMAGE" >/dev/null
+  kind load docker-image "$E3_E2E_PROBE_IMAGE" --name "$CLUSTER"
 }
 
 register_block() {
@@ -194,10 +221,11 @@ main() {
   create_cluster
   install_spark_operator
   start_control_plane
+  apply_network_policy
   for block in "${BLOCKS[@]}"; do register_block "$block"; done
   controller_env
   start_controller
-  log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence, рестарты"
+  log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence, рестарты, сеть попыток"
   E3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
 }
 
