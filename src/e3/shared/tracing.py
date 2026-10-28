@@ -41,6 +41,8 @@ _root_ids: ContextVar[tuple[int, int] | None] = ContextVar("root_ids", default=N
 
 _ROOT_SPAN_NAMESPACE = UUID("2b7e1f4a-9c3d-4e8b-a1f6-5d0c7e9b3a24")
 _SPAN_ID_BITS = 64
+# Сколько процесс ждёт отправки спанов при остановке.
+FLUSH_TIMEOUT_MILLIS = 5000
 _propagator = TraceContextTextMapPropagator()
 
 # Логгеры uvicorn пишут своими обработчиками: их направляем в общий JSON.
@@ -139,6 +141,13 @@ def configure_tracing(service_name: str) -> None:
     if os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT"):
         provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
     trace.set_tracer_provider(provider)
+
+
+def flush_spans() -> None:
+    """Досылает накопленные спаны процесса, не дольше `FLUSH_TIMEOUT_MILLIS`."""
+    provider = trace.get_tracer_provider()
+    if isinstance(provider, TracerProvider):
+        provider.force_flush(FLUSH_TIMEOUT_MILLIS)
 
 
 def _tracer() -> trace.Tracer:

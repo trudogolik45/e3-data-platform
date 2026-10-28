@@ -28,6 +28,9 @@ BLOCKS=(read filter aggregate)
 CONTROLLER_STOP_SECONDS=30
 NETWORK_POLICY=deploy/kubernetes/attempt-network-policy.yaml
 PLATFORM_TOKEN=dev-platform-token # E3_PLATFORM_TOKEN сервиса api в docker-compose.yml
+# Только IPv4: в сети kind у контейнера api появляется IPv6, и Docker шлёт на него
+# IPv6-запросы с хоста (`localhost` → ::1), а uvicorn слушает только 0.0.0.0.
+API_ADDRESS=127.0.0.1:8000
 
 export KUBECONFIG="$WORK/kubeconfig" # не трогаем ~/.kube/config
 export COMPOSE_PROJECT_NAME=e3-e2e
@@ -140,7 +143,7 @@ install_spark_operator() {
 start_control_plane() {
   log "Control Plane: PostgreSQL, Kafka, MinIO, API"
   compose up -d --build
-  until curl -fsS http://localhost:8000/docs >/dev/null 2>&1; do sleep 1; done
+  until curl -fsS http://$API_ADDRESS/docs >/dev/null 2>&1; do sleep 1; done
   # Топики создаёт Run Orchestrator при старте API; controller слушает уже готовые.
   until compose exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 \
     --list | grep -qx e3.execution.commands.v1; do sleep 1; done
@@ -181,7 +184,7 @@ register_block() {
   docker push -q "$image" >/dev/null
   digest=$(docker inspect -f '{{index .RepoDigests 0}}' "$image")
   sed "s|@EXECUTABLE_REF@|$digest|" "$ROOT/blocks/$block/block.yaml" >"$WORK/$block.yaml"
-  E3_API_URL=http://localhost:8000 E3_PLATFORM_TOKEN=$PLATFORM_TOKEN \
+  E3_API_URL=http://$API_ADDRESS E3_PLATFORM_TOKEN=$PLATFORM_TOKEN \
     uv run --project "$ROOT" e3-register-block "$WORK/$block.yaml"
 }
 
@@ -229,7 +232,7 @@ main() {
   controller_env
   start_controller
   log "E2E: Read → Filter → Aggregate → Publish Dataset, Attempt Fence, рестарты, сеть попыток"
-  E3_E2E_API_URL=http://localhost:8000 uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
+  E3_E2E_API_URL=http://$API_ADDRESS uv run --project "$ROOT" pytest "$ROOT/tests/e2e" -v
 }
 
 main "$@"
