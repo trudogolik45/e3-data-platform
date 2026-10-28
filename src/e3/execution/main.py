@@ -10,6 +10,8 @@ Offset команды коммитится только после её обра
 import asyncio
 import contextlib
 import logging
+import signal
+import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -154,5 +156,7 @@ def attempt_credentials(settings: ExecutionSettings) -> StsCredentials:
 def main() -> None:
     configure_logging()
     configure_tracing("e3-execution-controller")
+    # SIGTERM — обычный выход: atexit провайдера трасс дошлёт накопленные спаны.
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(serve(ExecutionSettings()))  # pyright: ignore[reportCallIssue]

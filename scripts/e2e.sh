@@ -163,11 +163,14 @@ in_kind() {
 
 apply_network_policy() {
   log "NetworkPolicy попыток ($NETWORK_POLICY)"
-  local api_ip api_port
-  api_ip=$(kubectl get endpointslice kubernetes -o jsonpath='{.endpoints[0].addresses[0]}')
+  local api_blocks="" api_port ip
+  # Каждый endpoint API server — свой ipBlock: на HA-кластере их несколько.
+  for ip in $(kubectl get endpointslice kubernetes -o jsonpath='{.endpoints[*].addresses[*]}'); do
+    api_blocks+="${api_blocks:+, }{ ipBlock: { cidr: \"$ip/32\" } }"
+  done
   api_port=$(kubectl get endpointslice kubernetes -o jsonpath='{.ports[0].port}')
   sed -e "s|@S3_CIDR@|$MINIO_IN_KIND/32|" -e "s|@S3_PORT@|9000|" \
-    -e "s|@KUBE_API_CIDR@|$api_ip/32|" -e "s|@KUBE_API_PORT@|$api_port|" \
+    -e "s|@KUBE_API_IP_BLOCKS@|$api_blocks|" -e "s|@KUBE_API_PORT@|$api_port|" \
     "$ROOT/$NETWORK_POLICY" | kubectl apply -n default -f -
 }
 
