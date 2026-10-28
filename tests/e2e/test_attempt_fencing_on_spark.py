@@ -40,7 +40,7 @@ from e3.shared.messages import (
     parse_command,
     reconcile,
 )
-from tests.e2e.cluster import attempt_logs, attempt_secret
+from tests.e2e.cluster import LOGS_TIMEOUT_SECONDS, attempt_logs, attempt_secret
 from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_graph
@@ -183,8 +183,10 @@ async def test_cancel_mid_spark_replaces_attempt_with_fence_and_ends_cancelled(
         run_id = await _start(api)
         node = await eventually(lambda: _read(api, run_id), lambda n: n["state"] == "RUNNING")
         attempt_id = UUID(node["attempt_id"])
-        # Running driver ещё может молчать: отмена тогда честно сохранит пустой лог.
-        await eventually(lambda: applications.pod_logs(attempt_id), _driver_wrote)
+        # Ждём первых байт лога driver: иначе отмена сохранит пустой driver.log.
+        await eventually(
+            lambda: applications.pod_logs(attempt_id), _has_driver_text, LOGS_TIMEOUT_SECONDS
+        )
 
         cancelled = await api.cancel_run(run_id)
         assert (cancelled.status_code, cancelled.json()["state"]) == (202, "CANCELLING")
@@ -202,7 +204,7 @@ async def test_cancel_mid_spark_replaces_attempt_with_fence_and_ends_cancelled(
     assert logs["driver.log"]
 
 
-def _driver_wrote(logs: list[PodLog]) -> bool:
+def _has_driver_text(logs: list[PodLog]) -> bool:
     return any(log.name == "driver" and log.text for log in logs)
 
 
