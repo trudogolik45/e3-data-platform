@@ -8,6 +8,9 @@ Controller ничего не перезапускает: ретраи решае
 Каждая запущенная попытка получает свои Attempt Credentials (ADR-0006) в Secret,
 которым владеет её `SparkApplication`. Secret создаётся после ресурса: без
 владельца он не останется. До его появления pod ждёт в `CreateContainerConfigError`.
+
+Упавшая попытка с `error.json` блока — `BLOCK_FAILED` с его текстом, без него —
+текст Spark Operator. В обоих случаях в ошибке указано, где логи driver.
 """
 
 import logging
@@ -29,11 +32,13 @@ from e3.execution.workload import (
     spark_application,
     workload_name,
 )
-from e3.shared.contracts import ExecutionContext, ExecutionResult
+from e3.shared.contracts import ExecutionContext, ExecutionError, ExecutionResult
 from e3.shared.messages import (
     CancelExecution,
     Command,
+    DriverLogs,
     ExecutionEvent,
+    ExecutionFailed,
     FailureReason,
     ReconcileExecution,
     SubmitExecution,
@@ -96,6 +101,10 @@ class Events(Protocol):
 class Results(Protocol):
     async def fetch(self, context: ExecutionContext) -> ExecutionResult | None:
         """ExecutionResult, который блок записал в `output_prefix`; нет — None."""
+        ...
+
+    async def fetch_error(self, context: ExecutionContext) -> ExecutionError | None:
+        """Ошибка, которую упавший блок записал в `output_prefix`; нет или не читается — None."""
         ...
 
 
@@ -228,12 +237,25 @@ class ExecutionController:
         if state.get("state") not in TERMINAL_STATES or not await self._dead(command.attempt_id):
             return None
         if state["state"] in FAILURE_REASONS:
-            error = f"{state['state']}: {state.get('errorMessage', '')}"
-            return failed(command, error, FAILURE_REASONS[state["state"]])
+            return await self._failure(application, command, state)
         result = await self._results.fetch(command.payload.context)
         if result is None:
-            return failed(command, "блок завершился, но не записал ExecutionResult", "NO_RESULT")
+            error = "блок завершился, но не записал ExecutionResult"
+            return _failed(application, command, error, "NO_RESULT")
         return succeeded(command, result)
+
+    async def _failure(
+        self, application: dict[str, Any], command: SubmitExecution, state: dict[str, Any]
+    ) -> ExecutionFailed:
+        """Ошибка блока из `error.json` точнее текста Spark Operator, и её повтор не исправит.
+
+        Нет файла (OOM, вытеснение pod'а) или он не читается — сбой Spark, его ретраят.
+        """
+        error = await self._results.fetch_error(command.payload.context)
+        if error is not None:
+            return _failed(application, command, error.message, "BLOCK_FAILED", code=error.code)
+        operator_error = f"{state['state']}: {state.get('errorMessage', '')}"
+        return _failed(application, command, operator_error, FAILURE_REASONS[state["state"]])
 
     async def _dead(self, attempt_id: UUID) -> bool:
         """Ни один pod попытки уже не работает и не может заработать."""
@@ -246,6 +268,28 @@ def _command(application: dict[str, Any]) -> SubmitExecution:
     if not isinstance(command, SubmitExecution):
         raise ValueError(f"в {COMMAND_ANNOTATION} не SubmitExecution: {command.type}")
     return command
+
+
+def _failed(
+    application: dict[str, Any],
+    command: SubmitExecution,
+    error: str,
+    reason: FailureReason,
+    *,
+    code: str | None = None,
+) -> ExecutionFailed:
+    """Провал попытки с указателем на логи driver: подробности остаются там."""
+    logs = _driver_logs(application, command.attempt_id)
+    pointer = f"логи driver: SparkApplication {logs.namespace}/{logs.spark_application}"
+    error = f"{error} ({pointer}, attempt_id {logs.attempt_id})"
+    return failed(command, error, reason, code=code, driver_logs=logs)
+
+
+def _driver_logs(application: dict[str, Any], attempt_id: UUID) -> DriverLogs:
+    metadata = application["metadata"]
+    return DriverLogs(
+        namespace=metadata["namespace"], spark_application=metadata["name"], attempt_id=attempt_id
+    )
 
 
 def _live(application: dict[str, Any]) -> bool:

@@ -224,6 +224,19 @@ class ExecutionResult(BaseModel):
 
 Блок пишет данные и manifests только под `output_prefix`, а свой `ExecutionResult` — в `{output_prefix}/result.json`. Оттуда его забирает Execution Controller, когда `SparkApplication` завершился, и шлёт в `ExecutionSucceeded`.
 
+Если блок распознал свою ошибку, он вместо результата пишет `ExecutionError` в `{output_prefix}/error.json` и завершается ненулевым кодом:
+
+```python
+class ExecutionError(BaseModel):
+    version: Literal[1] = 1
+    code: str  # INVALID_PARAMETERS, CAST_INVALID_INPUT, ARITHMETIC_OVERFLOW
+    message: str
+    column: str | None = None
+    target_type: str | None = None
+```
+
+Значений из данных в ошибке нет: только колонка, целевой тип и код. Файл не больше 4 КБ. Это только транспорт: Execution Controller читает его при провале `SparkApplication` и шлёт `message` в `ExecutionFailed` с причиной `BLOCK_FAILED`, Orchestrator хранит его в `NodeRun.error`. Нет файла (OOM, вытеснение pod'а), он повреждён или больше 4 КБ — остаётся текст Spark Operator и `SPARK_FAILED`.
+
 Вход BLOCK-узла — это либо `DatasetVersion` из Input Slot, либо принятый `NodeOutput` upstream-узла. В обоих случаях он приходит как `ResolvedInput`. `outputs` — это `port → manifest_uri` подготовленных manifests, а не `DatasetVersion`.
 
 Это разделяет три события:
@@ -337,11 +350,11 @@ Kafka используется только там, где требуется а
 
 ```
 
-`payload` выбирается по `type`: `SubmitExecution`, `ReconcileExecution` и `CancelExecution` — `executable_ref` блока и `ExecutionContext` (у проверки и отмены — исходные, как у попытки), `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error` и `reason`, `ExecutionLost` и `ExecutionCancelled` — пустой. Ключ сообщения — `node_run_id`.
+`payload` выбирается по `type`: `SubmitExecution`, `ReconcileExecution` и `CancelExecution` — `executable_ref` блока и `ExecutionContext` (у проверки и отмены — исходные, как у попытки), `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error`, `reason`, `code` из `error.json` и `driver_logs` (namespace, имя `SparkApplication` и `attempt_id`: URL нет, бэкенда логов нет), `ExecutionLost` и `ExecutionCancelled` — пустой. Ключ сообщения — `node_run_id`.
 
 `trace_id` — `pipeline_run_id` запуска, один на весь его путь от `POST /pipeline-runs` до публикации. Он же — заголовок `trace_id` каждого сообщения, поле `trace_id` в `ExecutionContext` блока, метка `e3.io/trace-id` у `SparkApplication` и его pod'ов и переменная `E3_TRACE_ID` у driver и executor. Логи Control Plane и Execution Controller — JSON-строки, `trace_id` в них отдельное поле. OpenTelemetry и W3C `traceparent` не используются.
 
-`reason` в `ExecutionFailed` Controller выводит из терминального состояния Kubernetes: `SPARK_FAILED`, `SUBMISSION_FAILED`, `NO_RESULT` (блок завершился без `ExecutionResult`) или `UNKNOWN` (по умолчанию, только у сообщений старого формата). У попытки причин больше: `LOST` (событие `ExecutionLost`) и `OUTPUT_REJECTED` (manifest отвергнут в `FINALIZING`, ставит сам Orchestrator). Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST`, остальные сразу переводят NodeRun в `FAILED`.
+`reason` в `ExecutionFailed` Controller выводит из терминального состояния Kubernetes и `error.json`: `SPARK_FAILED`, `SUBMISSION_FAILED`, `BLOCK_FAILED` (блок упал и записал `ExecutionError`), `NO_RESULT` (блок завершился без `ExecutionResult`) или `UNKNOWN` (по умолчанию, только у сообщений старого формата). У попытки причин больше: `LOST` (событие `ExecutionLost`) и `OUTPUT_REJECTED` (manifest отвергнут в `FINALIZING`, ставит сам Orchestrator). Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST`, остальные сразу переводят NodeRun в `FAILED`. В `error` Controller дописывает, где логи driver.
 
 Гарантии:
 

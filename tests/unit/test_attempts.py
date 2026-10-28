@@ -20,6 +20,6 @@ def test_retryable_failure_is_retried_until_fourth_attempt(reason: str) -> None:
     ]
 
 
-@pytest.mark.parametrize("reason", ["NO_RESULT", "OUTPUT_REJECTED", "UNKNOWN"])
+@pytest.mark.parametrize("reason", ["BLOCK_FAILED", "NO_RESULT", "OUTPUT_REJECTED", "UNKNOWN"])
 def test_non_retryable_failure_is_never_retried(reason: str) -> None:
     assert not should_retry(1, AttemptReason(reason))

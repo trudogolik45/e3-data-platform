@@ -14,6 +14,10 @@ from e3.shared.manifest import DataFormat, DataSchema
 # Блок кладёт свой ExecutionResult в `{output_prefix}/result.json`: оттуда его
 # забирает Execution Controller.
 RESULT_FILE = "result.json"
+# Упавший блок кладёт распознанную ошибку в `{output_prefix}/error.json`: файл —
+# только транспорт до `NodeRun.error`. Больше `ERROR_FILE_LIMIT` байт Controller не читает.
+ERROR_FILE = "error.json"
+ERROR_FILE_LIMIT = 4096
 
 # Неизменяемая ссылка на образ: `<repo>@sha256:<64 hex>`. Теги вроде `:latest` не годятся.
 OCI_DIGEST_PATTERN = r"^[^\s@]+@sha256:[0-9a-f]{64}$"
@@ -101,3 +105,18 @@ class ExecutionResult(BaseModel):
     attempt_id: UUID
     outputs: dict[str, str] = Field(description="port → manifest_uri подготовленного manifest")
     metrics: dict[str, float] = Field(default_factory=dict[str, float])
+
+
+class ExecutionError(BaseModel):
+    """Распознанная ошибка блока: код, текст для `NodeRun.error` и, если есть, колонка и тип.
+
+    Значений из данных здесь нет: сообщение попадает в API и видно всем участникам Project.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    version: Literal[1] = 1
+    code: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1)
+    column: str | None = None
+    target_type: str | None = None

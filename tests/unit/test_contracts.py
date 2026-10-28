@@ -116,6 +116,7 @@ def test_json_schema_covers_all_contracts() -> None:
         "BlockSpec",
         "ExecutionContext",
         "ExecutionResult",
+        "ExecutionError",
         "Manifest",
         "SubmitExecution",
         "ReconcileExecution",
@@ -137,6 +138,13 @@ def test_execution_context_and_result_carry_attempt_identity() -> None:
 
     for name in ("ExecutionContext", "ExecutionResult"):
         assert {"node_run_id", "attempt_id"} <= set(schemas[name]["required"])
+
+
+def test_execution_error_schema_has_version_code_and_message_without_data_value() -> None:
+    schema = json_schemas()["ExecutionError"]
+
+    assert set(schema["required"]) == {"code", "message"}
+    assert set(schema["properties"]) == {"version", "code", "message", "column", "target_type"}
 
 
 def test_dataset_version_ref_has_fixed_kind() -> None:

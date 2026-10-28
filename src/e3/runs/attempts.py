@@ -22,6 +22,8 @@ class AttemptState(StrEnum):
 class AttemptReason(StrEnum):
     SPARK_FAILED = "SPARK_FAILED"
     SUBMISSION_FAILED = "SUBMISSION_FAILED"
+    # Блок сам сообщил ошибку: она в данных или параметрах, повтор её не исправит.
+    BLOCK_FAILED = "BLOCK_FAILED"
     NO_RESULT = "NO_RESULT"
     LOST = "LOST"
     # Ставит сам Orchestrator: проверка manifest в FINALIZING отвергла результат.
