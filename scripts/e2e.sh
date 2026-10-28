@@ -123,9 +123,11 @@ create_cluster() {
   connect_to_kind "$REGISTRY"
 }
 
+# Сеть kind — вторая, с низшим приоритетом шлюза: иначе Docker 29 уводит в неё маршрут
+# по умолчанию и проброс портов контейнера, и с хоста API на Linux отвечает сбросом.
 connect_to_kind() {
   if [[ "$(docker inspect -f '{{json .NetworkSettings.Networks.kind}}' "$1")" == null ]]; then
-    docker network connect kind "$1"
+    docker network connect --gw-priority -1 kind "$1"
   fi
 }
 
