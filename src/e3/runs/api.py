@@ -26,7 +26,7 @@ from e3.runs.orchestrator import (
 )
 from e3.runs.progress import NodeState, RunState
 from e3.shared.manifest import DataFormat, DataSchema
-from e3.shared.tracing import traced
+from e3.shared.tracing import span, traced
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,8 @@ async def start_run(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Idempotency-Key уже использован с другим телом"
         ) from None
-    with traced(str(run.pipeline_run_id)):
+    # Повторный POST с тем же Idempotency-Key — ещё один спан в трассе того же запуска.
+    with span("accept PipelineRun", str(run.pipeline_run_id)):
         logger.info("PipelineRun %s принят", run.pipeline_run_id)
     return _run_out(run)
 

@@ -30,7 +30,7 @@ from e3.execution.settings import ExecutionSettings
 from e3.shared.kafka import Record, consume_batch, manual_commit_consumer, reliable_producer
 from e3.shared.messages import COMMANDS_TOPIC, EVENTS_TOPIC, ExecutionEvent, parse_command
 from e3.shared.storage import ObjectStorage
-from e3.shared.tracing import configure_logging
+from e3.shared.tracing import configure_logging, configure_tracing
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -153,5 +153,6 @@ def attempt_credentials(settings: ExecutionSettings) -> StsCredentials:
 
 def main() -> None:
     configure_logging()
+    configure_tracing("e3-execution-controller")
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(serve(ExecutionSettings()))  # pyright: ignore[reportCallIssue]

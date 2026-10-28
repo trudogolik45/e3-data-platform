@@ -5,10 +5,14 @@
 `SparkApplication`, как при сборке мусора по ownerReference.
 """
 
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from e3.execution.workload import PRESERVED_LABEL, REPORTED_LABEL, Pod, PodLog, Reported
+
+# `metadata.creationTimestamp` в формате Kubernetes API.
+TIMESTAMP = "%Y-%m-%dT%H:%M:%SZ"
 
 
 class KubernetesUnavailable(Exception):
@@ -33,8 +37,9 @@ class InMemorySparkApplications:
         return True
 
     def _store(self, manifest: dict[str, Any]) -> None:
-        """Как API server: у каждого созданного ресурса свой `metadata.uid`."""
+        """Как API server: у каждого созданного ресурса свой `metadata.uid` и время создания."""
         manifest["metadata"]["uid"] = str(uuid4())
+        manifest["metadata"]["creationTimestamp"] = datetime.now(UTC).strftime(TIMESTAMP)
         self.items[manifest["metadata"]["name"]] = manifest
 
     async def has_secret(self, name: str) -> bool:

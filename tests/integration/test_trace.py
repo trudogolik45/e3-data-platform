@@ -2,15 +2,17 @@
 
 `trace_id` запуска — его `pipeline_run_id`. Логи API, Run Orchestrator, outbox
 relay и Execution Controller несут его отдельным полем, а Kafka-сообщения —
-заголовком.
+заголовком. Спаны OpenTelemetry всех шагов складываются в одну трассу с этим id.
 """
 
 from uuid import UUID
 
 import pytest
+from opentelemetry.sdk.trace import ReadableSpan
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from e3.runs import Publisher
-from tests.integration.conftest import Plant, drain
+from tests.integration.conftest import Plant, drain, new_read_pipeline, run_request
 from tests.logs import TraceLogs
 
 pytestmark = pytest.mark.integration
@@ -37,7 +39,7 @@ async def test_submit_execution_carries_run_trace_id_in_kafka_header(plant: Plan
 
     await drain(plant.orchestrator.outbox_relay(recording).publish_pending)
 
-    assert [("trace_id", run_id.encode())] in recording.headers
+    assert any(("trace_id", run_id.encode()) in headers for headers in recording.headers)
 
 
 async def test_block_receives_run_trace_id_in_execution_context(plant: Plant) -> None:
@@ -99,3 +101,69 @@ async def test_requests_about_run_are_logged_with_its_trace_id(
         f"POST {path}/cancel",
         f"запрошена отмена PipelineRun {run_id}",
     ]
+
+
+def of_run(spans: InMemorySpanExporter, run_id: str) -> list[ReadableSpan]:
+    trace_id = UUID(run_id).int
+    return [s for s in spans.get_finished_spans() if s.context and s.context.trace_id == trace_id]
+
+
+async def test_spans_of_one_run_form_one_trace_from_request_to_publication(
+    plant: Plant, spans: InMemorySpanExporter
+) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    controller = plant.fake.controller()
+    await controller.handle(command)
+    plant.fake.complete_spark(command)
+    await controller.report()
+    await plant.consume_until(run_id, "read", "FINALIZING")
+    await plant.finish()
+
+    found = of_run(spans, run_id)
+    span_ids = {s.context.span_id for s in found if s.context}
+    assert [s.name for s in found if s.parent is None] == ["POST /pipeline-runs"]
+    assert all(s.parent.span_id in span_ids for s in found if s.parent)
+    assert {
+        "accept PipelineRun",
+        "dispatch PipelineRun",
+        "submit NodeRun",
+        "send SubmitExecution",
+        "handle SubmitExecution",
+        "Spark attempt",
+        "handle ExecutionSucceeded",
+        "finalize NodeRun",
+        "publish NodeRun",
+    } <= {s.name for s in found}
+
+
+async def test_event_handling_is_child_of_the_spark_attempt_that_sent_it(
+    plant: Plant, spans: InMemorySpanExporter
+) -> None:
+    run_id = await plant.start()
+    command = await plant.submitted(run_id)
+    controller = plant.fake.controller()
+    await controller.handle(command)
+    plant.fake.complete_spark(command)
+    await controller.report()
+
+    await plant.consume_until(run_id, "read", "FINALIZING")
+
+    named = {s.name: s for s in of_run(spans, run_id)}
+    attempt, handled = named["Spark attempt"], named["handle ExecutionSucceeded"]
+    assert attempt.context and handled.parent
+    assert handled.parent.span_id == attempt.context.span_id
+
+
+async def test_repeated_post_adds_span_to_trace_of_the_same_run(
+    plant: Plant, spans: InMemorySpanExporter
+) -> None:
+    request = await run_request(plant.api, new_read_pipeline)
+    first = await plant.api.start_run(request, key="same-key")
+    again = await plant.api.start_run(request, key="same-key")
+
+    run_id = first.json()["pipeline_run_id"]
+    assert again.json()["pipeline_run_id"] == run_id
+    names = [s.name for s in of_run(spans, run_id)]
+    assert names.count("POST /pipeline-runs") == 1
+    assert names.count("accept PipelineRun") == 2

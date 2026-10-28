@@ -18,8 +18,12 @@ Controller ничего не перезапускает: ретраи решае
 """
 
 import logging
+from contextlib import AbstractContextManager
+from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
+
+from opentelemetry.trace import Span
 
 from e3.execution.credentials import S3Keys
 from e3.execution.workload import (
@@ -59,7 +63,7 @@ from e3.shared.messages import (
     started,
     succeeded,
 )
-from e3.shared.tracing import traced
+from e3.shared.tracing import span, traced
 
 log = logging.getLogger(__name__)
 
@@ -161,8 +165,8 @@ class ExecutionController:
         self._config = config
 
     async def handle(self, command: Command) -> None:
-        """Логи обработки команды несут её `trace_id`."""
-        with traced(command.trace_id):
+        """Логи и спан обработки команды несут её `trace_id`."""
+        with span(f"handle {command.type}", command.trace_id, attributes=_attempt(command)):
             await self._handle(command)
             log.info("%s попытки %s обработана", command.type, command.attempt_id)
 
@@ -260,7 +264,8 @@ class ExecutionController:
         outcome = await self._outcome(application)
         if outcome is None:
             return
-        await self._send(outcome)
+        with _attempt_span(application, outcome):
+            await self._send(outcome)
         await self._applications.mark_reported(application["metadata"]["name"], Reported.DONE)
 
     async def _send(self, event: ExecutionEvent) -> None:
@@ -361,3 +366,23 @@ def _live(application: dict[str, Any]) -> bool:
 
 def _state(application: dict[str, Any]) -> dict[str, Any]:
     return application.get("status", {}).get("applicationState", {})
+
+
+def _attempt(message: Command | ExecutionEvent) -> dict[str, str]:
+    return {"node_run_id": str(message.node_run_id), "attempt_id": str(message.attempt_id)}
+
+
+def _attempt_span(
+    application: dict[str, Any], outcome: ExecutionEvent
+) -> AbstractContextManager[Span]:
+    """Спан попытки Spark: от создания её ресурса до доказанного итога.
+
+    Строится целиком в момент итога, из метаданных ресурса: переживает рестарт контроллера.
+    """
+    created = application["metadata"].get("creationTimestamp")
+    return span(
+        "Spark attempt",
+        outcome.trace_id,
+        start_time=datetime.fromisoformat(created) if created else None,
+        attributes=_attempt(outcome) | {"outcome": outcome.type},
+    )

@@ -28,7 +28,7 @@
 import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
@@ -91,10 +91,12 @@ from e3.shared.messages import (
     reconcile_id,
 )
 from e3.shared.storage import ObjectStorage, StorageUnavailable
-from e3.shared.tracing import traced
+from e3.shared.tracing import run_root_span, span, traced
 
 log = logging.getLogger(__name__)
 
+# Корневой спан трассы запуска (`e3.shared.tracing`): её начало — приём запроса.
+ROOT_SPAN = "POST /pipeline-runs"
 # Project за проход `dispatch_pending`; каждый стартует до `ACTIVE_RUNS_LIMIT` запусков.
 DISPATCH_BATCH = 10
 # Активный PipelineRun держит узлы и ресурсы; у Project их не больше лимита (PRD §5).
@@ -206,7 +208,11 @@ class RunOrchestrator:
     async def start(
         self, principal: Principal, request: RunRequest, *, idempotency_key: str
     ) -> PipelineRun:
-        """Создаёт PipelineRun; повтор с тем же ключом и телом отдаёт уже созданный."""
+        """Создаёт PipelineRun; повтор с тем же ключом и телом отдаёт уже созданный.
+
+        Новый запуск открывает корневой спан своей трассы с начала запроса.
+        """
+        started = datetime.now(UTC)
         pipeline = await self._pipelines.get(request.pipeline_id)
         authorize(principal, pipeline.project_id, Role.EDITOR)
         async with self._sessions() as session:
@@ -235,6 +241,7 @@ class RunOrchestrator:
             bindings,
             idempotency_key,
             specs,
+            started,
         )
 
     def outbox_relay(self, publisher: Publisher) -> OutboxRelay:
@@ -328,7 +335,7 @@ class RunOrchestrator:
             )
         ).all()
         for run in runs:
-            with traced(str(run.id)):
+            with span("dispatch PipelineRun", str(run.id)):
                 await self._advance(session, run)
                 log.info("PipelineRun %s запущен", run.id)
         return len(runs)
@@ -356,7 +363,7 @@ class RunOrchestrator:
                 if live >= self._quota.capacity:
                     self._log_exceeded(project_id, live)
                     return granted
-                with traced(str(run.id)):
+                with span("submit NodeRun", str(run.id), attributes={"node_id": node.node_id}):
                     await self._submit_attempt(session, run, node)
                 live += 1
                 granted += 1
@@ -416,7 +423,7 @@ class RunOrchestrator:
 
         Логи обработки события несут его `trace_id`.
         """
-        with traced(event.trace_id):
+        with span(f"handle {event.type}", event.trace_id, attributes=_attempt(event)):
             await self._handle_event(event)
 
     async def _handle_event(self, event: ExecutionEvent) -> None:
@@ -440,12 +447,12 @@ class RunOrchestrator:
     async def finalize_pending(self) -> int:
         """Возвращает число NodeRun, по которым проход продвинулся."""
         nodes = await self._nodes(NodeKind.BLOCK, NodeState.FINALIZING)
-        return sum([await _isolated(self._finalize, *node) for node in nodes])
+        return sum([await _isolated("finalize", self._finalize, *node) for node in nodes])
 
     async def publish_pending(self) -> int:
         """Возвращает число NodeRun, по которым проход продвинулся."""
         nodes = await self._nodes(NodeKind.SYSTEM, NodeState.RUNNING)
-        return sum([await _isolated(self._publish, *node) for node in nodes])
+        return sum([await _isolated("publish", self._publish, *node) for node in nodes])
 
     async def reconcile_pending(self) -> int:
         """Ставит в outbox ReconcileExecution молчащим попыткам; возвращает число поставленных.
@@ -501,6 +508,7 @@ class RunOrchestrator:
         bindings: Bindings,
         idempotency_key: str,
         specs: Mapping[BlockRef, BlockSpec],
+        started: datetime,
     ) -> PipelineRun:
         run_id = uuid4()
         async with self._sessions.begin() as session:
@@ -545,7 +553,9 @@ class RunOrchestrator:
                 trace_id=str(run_id),
             )
             row = await session.get_one(PipelineRunRow, run_id)
-            return _to_run(row)
+            run = _to_run(row)
+        with run_root_span(ROOT_SPAN, str(run_id), start_time=started):
+            return run
 
     async def _specs(self, graph: PipelineGraph) -> dict[BlockRef, BlockSpec]:
         return {
@@ -829,14 +839,14 @@ async def _record_reads(session: AsyncSession, run: PipelineRunRow, node: NodeRu
 
 
 async def _isolated(
-    advance: Callable[[UUID], Awaitable[None]], node_run_id: UUID, run_id: UUID
+    step: str, advance: Callable[[UUID], Awaitable[None]], node_run_id: UUID, run_id: UUID
 ) -> bool:
     """Сбой одного NodeRun не роняет проход: узел повторится в следующем.
 
     Возвращает, продвинулся ли узел; сбой — не продвижение, чтобы цикл взял паузу.
-    Логи узла несут `trace_id` его запуска.
+    Логи и спан шага `step` узла несут `trace_id` его запуска.
     """
-    with traced(str(run_id)):
+    with span(f"{step} NodeRun", str(run_id), attributes={"node_run_id": str(node_run_id)}):
         try:
             await advance(node_run_id)
         except StorageUnavailable:
@@ -1132,3 +1142,7 @@ def _to_node_output(row: NodeOutputRow) -> NodeOutput:
         format=_format(row.format),
         data_schema=DataSchema.model_validate(row.data_schema),
     )
+
+
+def _attempt(message: ExecutionEvent) -> dict[str, str]:
+    return {"node_run_id": str(message.node_run_id), "attempt_id": str(message.attempt_id)}

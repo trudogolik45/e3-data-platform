@@ -64,10 +64,10 @@ Python 3.13, FastAPI, SQLAlchemy, PostgreSQL, Kafka (KRaft), MinIO / S3, Apache 
 Нужны Docker и [uv](https://docs.astral.sh/uv/).
 
 ```sh
-docker compose up -d --build   # API на :8000, MinIO на :9000, Kafka на :9092
+docker compose up -d --build   # API на :8000, MinIO на :9000, Kafka на :9092, Jaeger UI на :16686
 ```
 
-Документация API — http://localhost:8000/docs.
+Документация API — http://localhost:8000/docs. Трасса запуска — `http://localhost:16686/trace/<pipeline_run_id без дефисов>`: от `POST /pipeline-runs` через outbox, Kafka и Execution Controller до публикации. Сервисы шлют спаны OpenTelemetry по `OTEL_EXPORTER_OTLP_ENDPOINT`; без неё не шлют.
 
 Вход — через локальный OIDC-провайдер `mock-oauth2-server` на :8080: он выдаёт токен любому
 `client_id`. Organization и Project создаёт команда платформы токеном `E3_PLATFORM_TOKEN`

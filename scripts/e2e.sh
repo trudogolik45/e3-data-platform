@@ -188,6 +188,8 @@ controller_env() {
   # Пользователь контроллера из minio-init в docker-compose.yml, не root MinIO.
   export E3_S3_ACCESS_KEY=e3-execution-controller E3_S3_SECRET_KEY=e3-execution-controller-secret
   export E3_SPARK_S3_ENDPOINT_URL="http://$MINIO_IN_KIND:9000"
+  # Спаны контроллера — в тот же Jaeger compose-стенда, что и спаны API.
+  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
 }
 
 start_controller() {

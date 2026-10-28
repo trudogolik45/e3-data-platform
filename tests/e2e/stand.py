@@ -1,4 +1,5 @@
-"""Компоненты e2e-стенда глазами теста: рестарт сервисов compose и процесса контроллера.
+"""Компоненты e2e-стенда глазами теста: рестарт сервисов compose и процесса контроллера,
+трассы запусков в Jaeger.
 
 `scripts/e2e.sh` поднимает compose-проект `COMPOSE_PROJECT_NAME` и запускает
 `e3-execution-controller` фоном; его pid лежит в `E3_E2E_CONTROLLER_PID_FILE`,
@@ -11,12 +12,69 @@ import os
 import shutil
 import signal
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from uuid import UUID
+
+import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTROLLER_STOP_SECONDS = 30
 POLL_SECONDS = 0.5
+# Jaeger compose-стенда: HTTP API его UI (внутренний, версия образа закреплена в compose).
+JAEGER_URL = "http://localhost:16686"
+TRACE_TIMEOUT_SECONDS = 60
+NOT_FOUND = 404
+
+
+@dataclass(frozen=True)
+class JaegerSpan:
+    operation: str
+    service: str
+    span_id: str
+    # span_id родителя; у корня — None.
+    parent: str | None
+
+
+async def jaeger_trace(run_id: str, *operations: str) -> list[JaegerSpan]:
+    """Спаны трассы запуска в Jaeger, как только в ней есть все `operations`.
+
+    Сервисы отправляют спаны пачками раз в несколько секунд, поэтому ждём.
+    """
+    async with (
+        httpx.AsyncClient(base_url=JAEGER_URL) as client,
+        asyncio.timeout(TRACE_TIMEOUT_SECONDS),
+    ):
+        while True:
+            found = await _trace_spans(client, UUID(run_id).hex)
+            if set(operations) <= {span.operation for span in found}:
+                return found
+            await asyncio.sleep(1)
+
+
+async def _trace_spans(client: httpx.AsyncClient, trace_id: str) -> list[JaegerSpan]:
+    response = await client.get(f"/api/traces/{trace_id}")
+    if response.status_code == NOT_FOUND:
+        return []
+    response.raise_for_status()
+    return [span for trace in response.json()["data"] for span in _spans(trace)]
+
+
+def _spans(trace: dict[str, Any]) -> list[JaegerSpan]:
+    services = {key: process["serviceName"] for key, process in trace["processes"].items()}
+    return [
+        JaegerSpan(
+            operation=span["operationName"],
+            service=services[span["processID"]],
+            span_id=span["spanID"],
+            parent=next(
+                (ref["spanID"] for ref in span["references"] if ref["refType"] == "CHILD_OF"),
+                None,
+            ),
+        )
+        for span in trace["spans"]
+    ]
 
 
 async def restart_service(service: str) -> None:

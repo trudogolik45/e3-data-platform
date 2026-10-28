@@ -14,6 +14,7 @@ from uuid import UUID, uuid4, uuid5
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from e3.shared.contracts import OCI_DIGEST_PATTERN, ExecutionContext, ExecutionResult
+from e3.shared.tracing import propagation_headers
 
 COMMANDS_TOPIC = "e3.execution.commands.v1"
 EVENTS_TOPIC = "e3.execution.events.v1"
@@ -25,7 +26,8 @@ TRACE_HEADER = "trace_id"
 
 
 def trace_headers(trace_id: str) -> list[tuple[str, bytes]]:
-    return [(TRACE_HEADER, trace_id.encode())]
+    """`trace_id` запуска и W3C `traceparent` спана, который шлёт сообщение."""
+    return [(TRACE_HEADER, trace_id.encode()), *propagation_headers()]
 
 
 class _Envelope(BaseModel):

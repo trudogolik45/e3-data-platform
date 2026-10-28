@@ -51,6 +51,7 @@ from tests.integration.graphs import (
     read_then_left_and_right_graph,
 )
 from tests.logs import trace_logs as trace_logs  # фикстура integration-тестов
+from tests.spans import spans as spans  # фикстура integration-тестов
 
 pytestmark = pytest.mark.integration
 
