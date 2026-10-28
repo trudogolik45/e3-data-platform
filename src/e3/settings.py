@@ -1,10 +1,12 @@
 from typing import Literal
 from uuid import UUID
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from e3.shared.messages import PodSize
+
+SECONDS_PER_DAY = 86400
 
 
 class Settings(BaseSettings):
@@ -54,10 +56,19 @@ class Settings(BaseSettings):
 
     upload_url_ttl_seconds: int = 3600
     upload_lease_seconds: float = Field(default=300, gt=0)
+    # Сколько хранится `staging/uploads/{id}/` от создания Upload. Дольше presigned URL:
+    # иначе клиент перезапишет уже очищенный объект, и его никто не удалит.
+    upload_retention_days: float = Field(default=7, gt=0)
 
     dev_organization_id: UUID = UUID("00000000-0000-4000-8000-000000000001")
     dev_project_id: UUID = UUID("00000000-0000-4000-8000-000000000002")
     dev_user_id: UUID = UUID("00000000-0000-4000-8000-000000000003")
+
+    @model_validator(mode="after")
+    def _upload_retention_outlives_url(self) -> "Settings":
+        if self.upload_retention_days * SECONDS_PER_DAY <= self.upload_url_ttl_seconds:
+            raise ValueError("upload_retention_days должен быть дольше upload_url_ttl_seconds")
+        return self
 
     def pod_size(self) -> PodSize:
         return PodSize(

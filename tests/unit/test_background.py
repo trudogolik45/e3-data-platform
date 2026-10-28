@@ -76,7 +76,12 @@ async def test_kafka_failure_while_running_rebuilds_connection(
     orchestrator = cast(RunOrchestrator, cast(Any, IdleOrchestrator()))
 
     async with background(
-        orchestrator, bootstrap_servers="kafka", group_id="g", idle_seconds=0.01, purge_seconds=60
+        orchestrator,
+        purge_uploads=orchestrator.purge_staging,
+        bootstrap_servers="kafka",
+        group_id="g",
+        idle_seconds=0.01,
+        purge_seconds=60,
     ):
         await asyncio.wait_for(broker.reconnected.wait(), WAIT_SECONDS)
 

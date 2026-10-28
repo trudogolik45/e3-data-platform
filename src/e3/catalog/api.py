@@ -12,7 +12,13 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from e3 import audit
 from e3.catalog.catalog import Catalog
 from e3.catalog.datasets import Dataset, DatasetNameTaken, DatasetNotFound
-from e3.catalog.uploads import FileNotUploaded, UploadNotFound, UploadState, UploadStatus
+from e3.catalog.uploads import (
+    FileNotUploaded,
+    UploadExpired,
+    UploadNotFound,
+    UploadState,
+    UploadStatus,
+)
 from e3.catalog.versions import DatasetVersion
 from e3.identity import Principal, ProjectAccessDenied, Role, authorize, current_principal
 from e3.shared.manifest import DataFormat, DataSchema
@@ -155,6 +161,10 @@ async def complete_upload(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Upload не найден") from None
     except FileNotUploaded:
         raise HTTPException(status.HTTP_409_CONFLICT, "файл ещё не загружен") from None
+    except UploadExpired:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "срок загрузки истёк, начните новую"
+        ) from None
     except StorageUnavailable:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "хранилище недоступно, повторите complete"

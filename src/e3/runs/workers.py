@@ -1,9 +1,10 @@
 """Фоновые циклы Run Orchestrator в процессе Control Plane.
 
 Каждый цикл повторяется независимо: пока есть работа — сразу, без работы или
-после сбоя — после паузы; у очисток staging и artifacts пауза своя, долгая. Сбой пишется
-в лог и не останавливает остальные циклы. Сбой Kafka пересоздаёт связь с ней,
-а недоступная Kafka не мешает API принимать запуски.
+после сбоя — после паузы; у очисток staging, artifacts и загрузок (её даёт
+Dataset Catalog) пауза своя, долгая. Сбой пишется в лог и не останавливает
+остальные циклы. Сбой Kafka пересоздаёт связь с ней, а недоступная Kafka
+не мешает API принимать запуски.
 """
 
 import asyncio
@@ -27,6 +28,7 @@ KAFKA_RETRY_SECONDS = 5
 async def background(
     orchestrator: RunOrchestrator,
     *,
+    purge_uploads: Tick,
     bootstrap_servers: str,
     group_id: str,
     idle_seconds: float,
@@ -40,6 +42,7 @@ async def background(
         _repeat(orchestrator.reconcile_pending, idle_seconds),
         _repeat(orchestrator.purge_staging, purge_seconds),
         _repeat(orchestrator.purge_artifacts, purge_seconds),
+        _repeat(purge_uploads, purge_seconds),
         _with_kafka(orchestrator, bootstrap_servers, group_id, idle_seconds),
     ]
     tasks = [asyncio.create_task(loop) for loop in loops]

@@ -38,6 +38,7 @@ def create_app(
         storage,
         upload_lease=timedelta(seconds=settings.upload_lease_seconds),
         upload_url_ttl_seconds=settings.upload_url_ttl_seconds,
+        upload_retention=timedelta(days=settings.upload_retention_days),
     )
     app.state.blocks = blocks.BlockRegistry(sessions)
     app.state.pipelines = pipelines.PipelineService(sessions, app.state.blocks, app.state.catalog)
@@ -68,6 +69,7 @@ def _run_orchestrator_in_background(settings: Settings):
     async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         async with runs.background(
             app.state.runs,
+            purge_uploads=app.state.catalog.purge_expired_uploads,
             bootstrap_servers=settings.kafka_bootstrap_servers,
             group_id=settings.kafka_group_id,
             idle_seconds=settings.runs_idle_seconds,
