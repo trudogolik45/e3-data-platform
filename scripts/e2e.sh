@@ -153,6 +153,18 @@ start_control_plane() {
   export E3_E2E_CONTROL_PLANE_API_ADDRESS="$(in_kind api):8000"
 }
 
+diagnose_network() { # ВРЕМЕННО: диагностика CI
+  docker version --format '{{.Server.Version}}'
+  for c in api minio postgres kafka; do
+    echo "--- $c"
+    docker inspect -f '{{json .NetworkSettings.Networks}}' "$(compose ps -q $c)" | head -c 1500; echo
+    docker exec "$(compose ps -q $c)" sh -c 'ip route 2>/dev/null || cat /proc/net/route' 2>&1 | head
+  done
+  for i in 1 2 3 4 5; do curl -sS -m 5 -o /dev/null -w "api %{http_code}\n" http://localhost:8000/docs || true; sleep 2; done
+  curl -sS -m 5 -o /dev/null -w "minio %{http_code}\n" http://localhost:9000/minio/health/live || true
+  sudo iptables -t nat -S 2>/dev/null | grep -E '8000|9000|DOCKER' | head -40 || true
+}
+
 # Подключает сервис compose к сети kind и печатает его адрес в ней.
 in_kind() {
   local container
@@ -224,7 +236,8 @@ main() {
   create_cluster
   install_spark_operator
   start_control_plane
-  apply_network_policy
+  diagnose_network
+  exit 1
   for block in "${BLOCKS[@]}"; do register_block "$block"; done
   controller_env
   start_controller
