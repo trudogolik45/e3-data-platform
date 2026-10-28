@@ -1,3 +1,8 @@
+"""Фикстура `trace_logs` для unit- и integration-тестов; их conftest её импортируют.
+
+Не в корневом conftest: тесты блоков идут в образе Spark и код Control Plane не грузят.
+"""
+
 import logging
 from collections.abc import Callable
 

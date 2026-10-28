@@ -32,9 +32,9 @@ from e3.shared.messages import (
     reconcile,
     started,
 )
-from tests.conftest import TraceLogs
 from tests.fakes.attempt_credentials import ATTEMPT_KEYS, FixedCredentials, StsUnavailable
 from tests.fakes.spark_applications import InMemorySparkApplications
+from tests.logs import TraceLogs
 from tests.unit.conftest import UNIT_S3_SECRET
 
 IMAGE = "localhost:5001/e3-read@sha256:" + "a" * 64

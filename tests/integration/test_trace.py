@@ -10,8 +10,8 @@ from uuid import UUID
 import pytest
 
 from e3.runs import Publisher
-from tests.conftest import TraceLogs
 from tests.integration.conftest import Plant, drain
+from tests.logs import TraceLogs
 
 pytestmark = pytest.mark.integration
 
