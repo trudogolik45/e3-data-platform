@@ -26,6 +26,7 @@ from e3.execution.workload import (
     GROUP,
     PLURAL,
     VERSION,
+    PodLog,
     attempt_fence,
     is_cancelled,
     is_fence,
@@ -39,7 +40,7 @@ from e3.shared.messages import (
     parse_command,
     reconcile,
 )
-from tests.e2e.cluster import attempt_logs, attempt_secret
+from tests.e2e.cluster import LOGS_TIMEOUT_SECONDS, attempt_logs, attempt_secret
 from tests.e2e.identity import project_api
 from tests.integration.conftest import Api
 from tests.integration.graphs import read_graph
@@ -182,6 +183,10 @@ async def test_cancel_mid_spark_replaces_attempt_with_fence_and_ends_cancelled(
         run_id = await _start(api)
         node = await eventually(lambda: _read(api, run_id), lambda n: n["state"] == "RUNNING")
         attempt_id = UUID(node["attempt_id"])
+        # Ждём первых байт лога driver: иначе отмена сохранит пустой driver.log.
+        await eventually(
+            lambda: applications.pod_logs(attempt_id), _has_driver_text, LOGS_TIMEOUT_SECONDS
+        )
 
         cancelled = await api.cancel_run(run_id)
         assert (cancelled.status_code, cancelled.json()["state"]) == (202, "CANCELLING")
@@ -194,9 +199,13 @@ async def test_cancel_mid_spark_replaces_attempt_with_fence_and_ends_cancelled(
     assert fence is not None and is_fence(fence) and is_cancelled(fence)
     assert await applications.pods(attempt_id) == []
     assert [a["state"] for a in node["attempts"]] == ["CANCELLED"]
-    # Снимок на момент отмены: driver мог успеть лишь начать, executor — не подняться.
+    # Executor мог не подняться, а начатый лог driver сохранён до удаления pod'ов.
     logs = await attempt_logs(node["node_run_id"], attempt_id, "driver.log")
     assert logs["driver.log"]
+
+
+def _has_driver_text(logs: list[PodLog]) -> bool:
+    return any(log.name == "driver" and log.text for log in logs)
 
 
 async def _start(api: Api) -> str:
