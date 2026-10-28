@@ -14,6 +14,7 @@ import signal
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from types import FrameType
 from typing import TYPE_CHECKING
 
 import boto3
@@ -157,6 +158,10 @@ def main() -> None:
     configure_logging()
     configure_tracing("e3-execution-controller")
     # SIGTERM — обычный выход: atexit провайдера трасс дошлёт накопленные спаны.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    signal.signal(signal.SIGTERM, _exit)
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(serve(ExecutionSettings()))  # pyright: ignore[reportCallIssue]
+
+
+def _exit(_signal: int, _frame: FrameType | None) -> None:
+    sys.exit(0)
