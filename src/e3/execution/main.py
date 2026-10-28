@@ -30,6 +30,7 @@ from e3.execution.settings import ExecutionSettings
 from e3.shared.kafka import Record, consume_batch, manual_commit_consumer, reliable_producer
 from e3.shared.messages import COMMANDS_TOPIC, EVENTS_TOPIC, ExecutionEvent, parse_command
 from e3.shared.storage import ObjectStorage
+from e3.shared.tracing import configure_logging
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -46,7 +47,9 @@ class KafkaEvents:
         self._producer = producer
 
     async def send(self, event: ExecutionEvent) -> None:
-        await self._producer.send_and_wait(EVENTS_TOPIC, event.to_bytes(), key=event.key())
+        await self._producer.send_and_wait(
+            EVENTS_TOPIC, event.to_bytes(), key=event.key(), headers=event.headers()
+        )
 
 
 class CommandConsumer:
@@ -66,7 +69,6 @@ class CommandConsumer:
             log.error("непонятная команда в %s, offset %s пропущен", record.topic, record.offset)
             return
         await self._controller.handle(command)
-        log.info("%s попытки %s обработана", command.type, command.attempt_id)
 
 
 async def serve(settings: ExecutionSettings) -> None:
@@ -148,6 +150,6 @@ def attempt_credentials(settings: ExecutionSettings) -> StsCredentials:
 
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_logging()
     with contextlib.suppress(KeyboardInterrupt):
         asyncio.run(serve(ExecutionSettings()))  # pyright: ignore[reportCallIssue]

@@ -324,7 +324,7 @@ Kafka используется только там, где требуется а
   "schema_version": 1,
   "node_run_id": "uuid",
   "attempt_id": "uuid",
-  "trace_id": "trace-context",
+  "trace_id": "pipeline_run_id",
   "occurred_at": "2026-10-24T12:00:00Z",
   "type": "ExecutionSucceeded",
   "payload": {
@@ -338,6 +338,8 @@ Kafka используется только там, где требуется а
 ```
 
 `payload` выбирается по `type`: `SubmitExecution`, `ReconcileExecution` и `CancelExecution` — `executable_ref` блока и `ExecutionContext` (у проверки и отмены — исходные, как у попытки), `ExecutionSucceeded` — `ExecutionResult`, `ExecutionFailed` — `error` и `reason`, `ExecutionLost` и `ExecutionCancelled` — пустой. Ключ сообщения — `node_run_id`.
+
+`trace_id` — `pipeline_run_id` запуска, один на весь его путь от `POST /pipeline-runs` до публикации. Он же — заголовок `trace_id` каждого сообщения, поле `trace_id` в `ExecutionContext` блока, метка `e3.io/trace-id` у `SparkApplication` и его pod'ов и переменная `E3_TRACE_ID` у driver и executor. Логи Control Plane и Execution Controller — JSON-строки, `trace_id` в них отдельное поле. OpenTelemetry и W3C `traceparent` не используются.
 
 `reason` в `ExecutionFailed` Controller выводит из терминального состояния Kubernetes: `SPARK_FAILED`, `SUBMISSION_FAILED`, `NO_RESULT` (блок завершился без `ExecutionResult`) или `UNKNOWN` (по умолчанию, только у сообщений старого формата). У попытки причин больше: `LOST` (событие `ExecutionLost`) и `OUTPUT_REJECTED` (manifest отвергнут в `FINALIZING`, ставит сам Orchestrator). Ретраятся `SPARK_FAILED`, `SUBMISSION_FAILED` и `LOST`, остальные сразу переводят NodeRun в `FAILED`.
 

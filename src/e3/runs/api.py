@@ -1,5 +1,7 @@
 """REST API v1 Run Orchestrator."""
 
+import logging
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -24,6 +26,9 @@ from e3.runs.orchestrator import (
 )
 from e3.runs.progress import NodeState, RunState
 from e3.shared.manifest import DataFormat, DataSchema
+from e3.shared.tracing import traced
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/pipeline-runs", tags=["pipeline-runs"])
 
@@ -116,17 +121,31 @@ async def start_run(
         raise HTTPException(
             status.HTTP_409_CONFLICT, "Idempotency-Key уже использован с другим телом"
         ) from None
+    with traced(str(run.pipeline_run_id)):
+        logger.info("PipelineRun %s принят", run.pipeline_run_id)
     return _run_out(run)
 
 
-@router.get("/{pipeline_run_id}")
+async def _trace_run(request: Request, pipeline_run_id: UUID) -> AsyncGenerator[None]:
+    """Логи запроса по запуску несут его `trace_id`."""
+    with traced(str(pipeline_run_id)):
+        logger.info("%s %s", request.method, request.url.path)
+        yield
+
+
+TracedRun = Depends(_trace_run)
+
+
+@router.get("/{pipeline_run_id}", dependencies=[TracedRun])
 async def get_run(
     pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
 ) -> PipelineRunOut:
     return _run_out(await _accessible_run(orchestrator, principal, pipeline_run_id, Role.VIEWER))
 
 
-@router.post("/{pipeline_run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{pipeline_run_id}/cancel", status_code=status.HTTP_202_ACCEPTED, dependencies=[TracedRun]
+)
 async def cancel_run(
     pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep, log: AuditLogDep
 ) -> PipelineRunOut:
@@ -149,7 +168,7 @@ async def cancel_run(
     return _run_out(cancelled)
 
 
-@router.get("/{pipeline_run_id}/nodes")
+@router.get("/{pipeline_run_id}/nodes", dependencies=[TracedRun])
 async def list_nodes(
     pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
 ) -> list[NodeRunOut]:

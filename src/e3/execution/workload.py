@@ -35,6 +35,8 @@ NODE_RUN_LABEL = "e3.io/node-run-id"
 REPORTED_LABEL = "e3.io/reported"
 FENCED_LABEL = "e3.io/fenced"
 CANCELLED_LABEL = "e3.io/cancelled"
+# `trace_id` PipelineRun: по нему находятся ресурс попытки, её pod'ы и их логи.
+TRACE_LABEL = "e3.io/trace-id"
 COMMAND_ANNOTATION = "e3.io/command"
 
 # Точка входа образа блока: получает ExecutionContext JSON-аргументом.
@@ -121,11 +123,18 @@ def attempt_fence(
 
 
 def spark_application(command: SubmitExecution, config: WorkloadConfig) -> dict[str, Any]:
-    labels = {ATTEMPT_LABEL: str(command.attempt_id), NODE_RUN_LABEL: str(command.node_run_id)}
+    labels = {
+        ATTEMPT_LABEL: str(command.attempt_id),
+        NODE_RUN_LABEL: str(command.node_run_id),
+        TRACE_LABEL: command.trace_id,
+    }
     pod = _pod_size(command.payload.pod) | {
         "labels": labels,
         "envFrom": [{"secretRef": {"name": credentials_secret_name(command.attempt_id)}}],
-        "env": [{"name": "E3_S3_ENDPOINT_URL", "value": config.s3_endpoint_url}],
+        "env": [
+            {"name": "E3_S3_ENDPOINT_URL", "value": config.s3_endpoint_url},
+            {"name": "E3_TRACE_ID", "value": command.trace_id},
+        ],
     }
     return {
         "apiVersion": f"{GROUP}/{VERSION}",

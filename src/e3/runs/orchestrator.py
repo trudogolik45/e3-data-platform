@@ -90,6 +90,7 @@ from e3.shared.messages import (
     reconcile_id,
 )
 from e3.shared.storage import ObjectStorage, StorageUnavailable
+from e3.shared.tracing import traced
 
 log = logging.getLogger(__name__)
 
@@ -324,7 +325,9 @@ class RunOrchestrator:
             )
         ).all()
         for run in runs:
-            await self._advance(session, run)
+            with traced(str(run.id)):
+                await self._advance(session, run)
+                log.info("PipelineRun %s запущен", run.id)
         return len(runs)
 
     async def _grant(self, session: AsyncSession, project_id: UUID) -> int:
@@ -350,7 +353,8 @@ class RunOrchestrator:
                 if live >= self._quota.capacity:
                     self._log_exceeded(project_id, live)
                     return granted
-                await self._submit_attempt(session, run, node)
+                with traced(str(run.id)):
+                    await self._submit_attempt(session, run, node)
                 live += 1
                 granted += 1
         return granted
@@ -397,6 +401,7 @@ class RunOrchestrator:
                 dedup_key=str(run.id),
                 trace_id=str(run.id),
             )
+            log.info("запрошена отмена PipelineRun %s", run.id)
             if run.state not in {RunState.PENDING, RunState.RUNNING} or run.failed_node_run_id:
                 return _to_run(run)
             run.state = RunState.CANCELLING
@@ -404,7 +409,14 @@ class RunOrchestrator:
             return _to_run(run)
 
     async def handle_event(self, event: ExecutionEvent) -> None:
-        """Применяет событие один раз и только к Current Attempt и допустимому переходу."""
+        """Применяет событие один раз и только к Current Attempt и допустимому переходу.
+
+        Логи обработки события несут его `trace_id`.
+        """
+        with traced(event.trace_id):
+            await self._handle_event(event)
+
+    async def _handle_event(self, event: ExecutionEvent) -> None:
         async with self._sessions.begin() as session:
             if not await first_delivery(session, event.event_id):
                 return
@@ -424,13 +436,13 @@ class RunOrchestrator:
 
     async def finalize_pending(self) -> int:
         """Возвращает число NodeRun, по которым проход продвинулся."""
-        ids = await self._node_ids(NodeKind.BLOCK, NodeState.FINALIZING)
-        return sum([await _isolated(self._finalize, node_run_id) for node_run_id in ids])
+        nodes = await self._nodes(NodeKind.BLOCK, NodeState.FINALIZING)
+        return sum([await _isolated(self._finalize, *node) for node in nodes])
 
     async def publish_pending(self) -> int:
         """Возвращает число NodeRun, по которым проход продвинулся."""
-        ids = await self._node_ids(NodeKind.SYSTEM, NodeState.RUNNING)
-        return sum([await _isolated(self._publish, node_run_id) for node_run_id in ids])
+        nodes = await self._nodes(NodeKind.SYSTEM, NodeState.RUNNING)
+        return sum([await _isolated(self._publish, *node) for node in nodes])
 
     async def reconcile_pending(self) -> int:
         """Ставит в outbox ReconcileExecution молчащим попыткам; возвращает число поставленных.
@@ -578,6 +590,7 @@ class RunOrchestrator:
             inputs=await self._resolve_inputs(session, node),
             parameters=node.parameters,
             output_prefix=self._storage.uri(execution_prefix(attempt_id)),
+            trace_id=str(run.id),
         )
         command = SubmitExecution(
             node_run_id=node.id,
@@ -598,6 +611,7 @@ class RunOrchestrator:
         await _record_reads(session, run, node)
         node.current_attempt_id = attempt_id
         node.state = NodeState.QUEUED
+        log.info("попытка %s NodeRun %s поставлена", attempt_id, node.id)
 
     async def _resolve_inputs(
         self, session: AsyncSession, node: NodeRunRow
@@ -660,6 +674,8 @@ class RunOrchestrator:
                 await self._end_attempt(session, run, node, attempt, AttemptReason.LOST, error)
             case ExecutionCancelled():
                 log.warning("CancelExecution попытке %s не посылали", attempt.attempt_id)
+                return
+        log.info("%s попытки %s применено", event.type, attempt.attempt_id)
 
     async def _end_attempt(
         self,
@@ -689,17 +705,19 @@ class RunOrchestrator:
         try:
             manifests = await verify_outputs(self._storage, result, node.output_ports)
         except OutputRejected as rejection:
+            log.warning("manifest NodeRun %s отвергнут: %s", node_run_id, rejection)
             await self._transition(node_run_id, NodeState.FINALIZING, _rejected(str(rejection)))
             return
         await self._transition(node_run_id, NodeState.FINALIZING, _accepted(result, manifests))
+        log.info("NodeOutput NodeRun %s принят", node_run_id)
 
     async def _publish(self, node_run_id: UUID) -> None:
         publication = await self._publication(node_run_id)
         if publication is None:
-            await self._transition(node_run_id, NodeState.RUNNING, _failed("нет NodeOutput"))
+            await self._fail_publication(node_run_id, "нет NodeOutput")
             return
         if not await self._initiator_may_publish(publication):
-            await self._transition(node_run_id, NodeState.RUNNING, _failed(ACCESS_REVOKED))
+            await self._fail_publication(node_run_id, ACCESS_REVOKED)
             return
         try:
             version = await self._datasets.publish(
@@ -711,9 +729,14 @@ class RunOrchestrator:
                 trace_id=publication.trace_id,
             )
         except (catalog.PublicationRejected, catalog.DatasetNotFound) as error:
-            await self._transition(node_run_id, NodeState.RUNNING, _failed(str(error)))
+            await self._fail_publication(node_run_id, str(error))
             return
         await self._transition(node_run_id, NodeState.RUNNING, _published(version.version_id))
+        log.info("DatasetVersion %s опубликована", version.version_id)
+
+    async def _fail_publication(self, node_run_id: UUID, error: str) -> None:
+        log.warning("Publish Dataset NodeRun %s не опубликовал: %s", node_run_id, error)
+        await self._transition(node_run_id, NodeState.RUNNING, _failed(error))
 
     async def _initiator_may_publish(self, publication: "_Publication") -> bool:
         """Текущий Membership Initiator, а не права на момент запуска (ADR-0004)."""
@@ -761,12 +784,15 @@ class RunOrchestrator:
             await self._advance(session, run)
         await self._dispatch_isolated(run.project_id)
 
-    async def _node_ids(self, kind: NodeKind, state: NodeState) -> list[UUID]:
+    async def _nodes(self, kind: NodeKind, state: NodeState) -> list[tuple[UUID, UUID]]:
+        """Пары `node_run_id` и `pipeline_run_id`: второй — `trace_id` логов узла."""
         async with self._sessions() as session:
-            ids = await session.scalars(
-                select(NodeRunRow.id).where(NodeRunRow.kind == kind, NodeRunRow.state == state)
+            rows = await session.execute(
+                select(NodeRunRow.id, NodeRunRow.pipeline_run_id).where(
+                    NodeRunRow.kind == kind, NodeRunRow.state == state
+                )
             )
-            return list(ids)
+            return [(node_run_id, run_id) for node_run_id, run_id in rows]
 
 
 @dataclass(frozen=True)
@@ -795,20 +821,24 @@ async def _record_reads(session: AsyncSession, run: PipelineRunRow, node: NodeRu
         )
 
 
-async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUID) -> bool:
+async def _isolated(
+    advance: Callable[[UUID], Awaitable[None]], node_run_id: UUID, run_id: UUID
+) -> bool:
     """Сбой одного NodeRun не роняет проход: узел повторится в следующем.
 
     Возвращает, продвинулся ли узел; сбой — не продвижение, чтобы цикл взял паузу.
+    Логи узла несут `trace_id` его запуска.
     """
-    try:
-        await advance(node_run_id)
-    except StorageUnavailable:
-        log.warning("хранилище недоступно, NodeRun %s повторится", node_run_id, exc_info=True)
-        return False
-    except Exception:
-        log.exception("NodeRun %s не продвинулся, повторится", node_run_id)
-        return False
-    return True
+    with traced(str(run_id)):
+        try:
+            await advance(node_run_id)
+        except StorageUnavailable:
+            log.warning("хранилище недоступно, NodeRun %s повторится", node_run_id, exc_info=True)
+            return False
+        except Exception:
+            log.exception("NodeRun %s не продвинулся, повторится", node_run_id)
+            return False
+        return True
 
 
 def _projects_with_waiting_runs() -> Select[UUID]:
@@ -905,9 +935,12 @@ def _request_check(
     """ReconcileExecution или CancelExecution с общим счётчиком: повтор по тому же таймауту."""
     attempt.reconcile_count += 1
     attempt.reconcile_requested_at = func.now()
-    command = SubmitExecution.model_validate(attempt.command)
+    submission = SubmitExecution.model_validate(attempt.command)
     check = cancel if _cancelling(node_state) else reconcile
-    enqueue(session, check(command, attempt.reconcile_count))
+    command = check(submission, attempt.reconcile_count)
+    enqueue(session, command)
+    with traced(command.trace_id):
+        log.info("%s попытки %s поставлена", command.type, command.attempt_id)
 
 
 async def _cancel_node(session: AsyncSession, node: NodeRunRow) -> None:

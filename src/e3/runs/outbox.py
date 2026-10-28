@@ -10,6 +10,7 @@
 """
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol
@@ -20,14 +21,19 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from e3.runs.models import InboxRow, OutboxRow
-from e3.shared.messages import COMMANDS_TOPIC, Command
+from e3.shared.messages import COMMANDS_TOPIC, Command, trace_headers
+from e3.shared.tracing import traced
+
+log = logging.getLogger(__name__)
 
 RELAY_BATCH = 100
 RELAY_LEASE = timedelta(minutes=1)
 
 
 class Publisher(Protocol):
-    async def send(self, topic: str, *, key: bytes, value: bytes) -> None:
+    async def send(
+        self, topic: str, *, key: bytes, value: bytes, headers: list[tuple[str, bytes]]
+    ) -> None:
         """Возвращается после подтверждения брокера."""
         ...
 
@@ -77,11 +83,21 @@ class OutboxRelay:
         sent: list[UUID] = []
         try:
             for message in messages:
-                await self._publisher.send(message.topic, key=message.key, value=message.value)
+                await self._send(message)
                 sent.append(message.id)
         finally:
             await self._settle(sent, [m.id for m in messages if m.id not in sent])
         return len(sent)
+
+    async def _send(self, message: "_Message") -> None:
+        with traced(message.trace_id):
+            await self._publisher.send(
+                message.topic,
+                key=message.key,
+                value=message.value,
+                headers=trace_headers(message.trace_id),
+            )
+            log.info("%s попытки %s отправлена в Kafka", message.type, message.attempt_id)
 
     async def _claim(self) -> list["_Message"]:
         async with self._sessions.begin() as session:
@@ -121,7 +137,20 @@ class _Message:
     topic: str
     key: bytes
     value: bytes
+    # Из envelope команды: в заголовок и логи.
+    type: str
+    attempt_id: str
+    trace_id: str
 
     @classmethod
     def of(cls, row: OutboxRow) -> "_Message":
-        return cls(row.id, row.topic, row.key.encode(), json.dumps(row.payload).encode())
+        payload = row.payload
+        return cls(
+            row.id,
+            row.topic,
+            row.key.encode(),
+            json.dumps(payload).encode(),
+            payload["type"],
+            payload["attempt_id"],
+            payload["trace_id"],
+        )

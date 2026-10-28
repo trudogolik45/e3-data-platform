@@ -20,6 +20,13 @@ EVENTS_TOPIC = "e3.execution.events.v1"
 
 _EVENT_ID_NAMESPACE = UUID("6f1d3c52-8a4e-4c1b-9f0e-3d2a7b5c9e10")
 
+# Заголовок Kafka-сообщения: `trace_id` envelope виден без разбора тела.
+TRACE_HEADER = "trace_id"
+
+
+def trace_headers(trace_id: str) -> list[tuple[str, bytes]]:
+    return [(TRACE_HEADER, trace_id.encode())]
+
 
 class _Envelope(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -33,6 +40,9 @@ class _Envelope(BaseModel):
 
     def key(self) -> bytes:
         return str(self.node_run_id).encode()
+
+    def headers(self) -> list[tuple[str, bytes]]:
+        return trace_headers(self.trace_id)
 
     def to_bytes(self) -> bytes:
         return self.model_dump_json().encode()

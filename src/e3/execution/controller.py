@@ -44,6 +44,7 @@ from e3.shared.messages import (
     started,
     succeeded,
 )
+from e3.shared.tracing import traced
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +121,12 @@ class ExecutionController:
         self._config = config
 
     async def handle(self, command: Command) -> None:
+        """Логи обработки команды несут её `trace_id`."""
+        with traced(command.trace_id):
+            await self._handle(command)
+            log.info("%s попытки %s обработана", command.type, command.attempt_id)
+
+    async def _handle(self, command: Command) -> None:
         match command:
             case SubmitExecution():
                 await self.submit(command)
@@ -180,7 +187,8 @@ class ExecutionController:
         """Сообщает о сменах состояния попыток; возвращает число ещё не завершённых."""
         applications = await self._applications.unreported()
         for application in applications:
-            await self._report(application)
+            with traced(_command(application).trace_id):
+                await self._report(application)
         return len(applications)
 
     async def _report(self, application: dict[str, Any]) -> None:
@@ -194,7 +202,7 @@ class ExecutionController:
             and _state(application).get("state") in STARTED_STATES
             and REPORTED_LABEL not in metadata["labels"]
         ):
-            await self._events.send(started(_command(application)))
+            await self._send(started(_command(application)))
             await self._applications.mark_reported(metadata["name"], Reported.STARTED)
         await self._settle(application)
 
@@ -202,8 +210,12 @@ class ExecutionController:
         outcome = await self._outcome(application)
         if outcome is None:
             return
-        await self._events.send(outcome)
+        await self._send(outcome)
         await self._applications.mark_reported(application["metadata"]["name"], Reported.DONE)
+
+    async def _send(self, event: ExecutionEvent) -> None:
+        await self._events.send(event)
+        log.info("%s попытки %s отправлено", event.type, event.attempt_id)
 
     async def _outcome(self, application: dict[str, Any]) -> ExecutionEvent | None:
         """Итог мёртвой попытки; жива или смерть не доказана — None."""
