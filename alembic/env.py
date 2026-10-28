@@ -7,6 +7,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from e3.audit.models import Base as AuditBase
 from e3.blocks.models import Base as BlocksBase
 from e3.catalog.models import Base as CatalogBase
 from e3.identity.models import Base as IdentityBase
@@ -24,6 +25,7 @@ target_metadata = [
     PipelinesBase.metadata,
     RunsBase.metadata,
     IdentityBase.metadata,
+    AuditBase.metadata,
 ]
 
 

@@ -35,7 +35,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import aliased
 
-from e3 import catalog
+from e3 import audit, catalog
 from e3.blocks import BlockRegistry
 from e3.identity import IdentityService, Principal, Role, authorize
 from e3.pipelines import (
@@ -370,14 +370,26 @@ class RunOrchestrator:
             log.exception("Project %s не продвинулся, повторится", project_id)
             return 0
 
-    async def cancel(self, pipeline_run_id: UUID) -> PipelineRun:
-        """Запрашивает отмену; повтор и отмена во время Fail-fast ничего не меняют."""
+    async def cancel(self, pipeline_run_id: UUID, *, by: UUID) -> PipelineRun:
+        """Запрашивает отмену от имени `by`; запрос оставляет Audit Event.
+
+        Повтор и отмена во время Fail-fast запуск не меняют, но запрос всё равно записан.
+        """
         async with self._sessions.begin() as session:
             run = await session.get(PipelineRunRow, pipeline_run_id, with_for_update=True)
             if run is None:
                 raise PipelineRunNotFound(pipeline_run_id)
             if run.state in FINISHED:
                 raise RunNotCancellable(pipeline_run_id)
+            await audit.record(
+                session,
+                audit.AuditAction.PIPELINE_RUN_CANCEL,
+                user_id=by,
+                project_id=run.project_id,
+                object_id=run.id,
+                dedup_key=str(run.id),
+                trace_id=str(run.id),
+            )
             if run.state not in {RunState.PENDING, RunState.RUNNING} or run.failed_node_run_id:
                 return _to_run(run)
             run.state = RunState.CANCELLING
@@ -493,6 +505,15 @@ class RunOrchestrator:
                 raise PipelineArchived(str(pipeline.pipeline_id))
             check_not_archived(bindings, datasets)
             session.add_all(build_node_runs(run_id, graph, bindings, specs))
+            await audit.record(
+                session,
+                audit.AuditAction.PIPELINE_RUN_CREATE,
+                user_id=initiator,
+                project_id=project_id,
+                object_id=run_id,
+                dedup_key=str(run_id),
+                trace_id=str(run_id),
+            )
             row = await session.get_one(PipelineRunRow, run_id)
             return _to_run(row)
 
@@ -560,6 +581,7 @@ class RunOrchestrator:
             )
         )
         enqueue(session, command)
+        await _record_reads(session, run, node)
         node.current_attempt_id = attempt_id
         node.state = NodeState.QUEUED
 
@@ -671,6 +693,8 @@ class RunOrchestrator:
                 dataset_id=publication.dataset_id,
                 source=publication.source,
                 manifest_uri=publication.manifest_uri,
+                by=publication.initiator,
+                trace_id=publication.trace_id,
             )
         except (catalog.PublicationRejected, catalog.DatasetNotFound) as error:
             await self._transition(node_run_id, NodeState.RUNNING, _failed(str(error)))
@@ -704,6 +728,7 @@ class RunOrchestrator:
             node.target_dataset_id,
             source,
             output.manifest_uri,
+            str(run.id),
         )
 
     async def _transition(self, node_run_id: UUID, expected: NodeState, change: NodeChange) -> None:
@@ -737,6 +762,23 @@ class _Publication:
     dataset_id: UUID
     source: NodeOutputRef
     manifest_uri: str
+    trace_id: str
+
+
+async def _record_reads(session: AsyncSession, run: PipelineRunRow, node: NodeRunRow) -> None:
+    """Initiator читает каждую входную DatasetVersion узла; повтор попытки записи не добавляет."""
+    for port, ref in node_inputs(node).items():
+        if not isinstance(ref, DatasetVersionRef):
+            continue
+        await audit.record(
+            session,
+            audit.AuditAction.DATASET_VERSION_READ,
+            user_id=run.initiated_by_user_id,
+            project_id=run.project_id,
+            object_id=ref.version_id,
+            dedup_key=f"{node.id}/{port}",
+            trace_id=str(run.id),
+        )
 
 
 async def _isolated(advance: Callable[[UUID], Awaitable[None]], node_run_id: UUID) -> bool:

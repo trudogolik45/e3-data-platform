@@ -9,6 +9,7 @@ from e3.settings import Settings
 from e3.shared.contracts import NodeOutputRef
 from tests.fakes.execution_controller import write_parquet_output
 from tests.integration.conftest import Api, read_object
+from tests.integration.test_audit_events import audit_events
 
 pytestmark = pytest.mark.integration
 
@@ -41,6 +42,8 @@ async def test_publication_creates_parquet_version_with_same_manifest(
         dataset_id=dataset_id,
         source=node_output_ref(),
         manifest_uri=manifest_uri,
+        by=settings.dev_user_id,
+        trace_id="trace",
     )
 
     assert version.format == "PARQUET"
@@ -63,12 +66,15 @@ async def test_republishing_same_node_output_returns_existing_version(
             dataset_id=dataset_id,
             source=source,
             manifest_uri=manifest_uri,
+            by=settings.dev_user_id,
+            trace_id="trace",
         )
         for _ in range(2)
     ]
 
     assert first == second
     assert len(await api.versions(dataset_id)) == 1
+    assert len(await audit_events(settings, "dataset.publish", first.version_id)) == 1
 
 
 async def test_publication_into_foreign_project_is_rejected(
@@ -82,6 +88,8 @@ async def test_publication_into_foreign_project_is_rejected(
             dataset_id=dataset_id,
             source=node_output_ref(),
             manifest_uri=staged_output(s3, settings),
+            by=settings.dev_user_id,
+            trace_id="trace",
         )
 
     assert await api.versions(dataset_id) == []

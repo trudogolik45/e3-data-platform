@@ -11,6 +11,7 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from e3 import audit
 from e3.catalog import datasets
 from e3.catalog.uploads import manifest_key, version_prefix
 from e3.catalog.versions import DatasetVersion, find_published, register
@@ -35,8 +36,16 @@ class Publications:
         self._storage = storage
 
     async def publish(
-        self, *, project_id: UUID, dataset_id: UUID, source: NodeOutputRef, manifest_uri: str
+        self,
+        *,
+        project_id: UUID,
+        dataset_id: UUID,
+        source: NodeOutputRef,
+        manifest_uri: str,
+        by: UUID,
+        trace_id: str,
     ) -> DatasetVersion:
+        """DatasetVersion и Audit Event Publication — одной транзакцией."""
         async with self._sessions() as session:
             published = await find_published(session, source)
             if published is not None:
@@ -47,7 +56,7 @@ class Publications:
         version_id = publication_version_id(source)
         manifest = await self._transfer(dataset_id, version_id, manifest_uri)
         async with self._sessions.begin() as session:
-            return await register(
+            version = await register(
                 session,
                 dataset_id=dataset_id,
                 version_id=version_id,
@@ -56,6 +65,16 @@ class Publications:
                 manifest_uri=self._storage.uri(manifest_key(dataset_id, version_id)),
                 source=source,
             )
+            await audit.record(
+                session,
+                audit.AuditAction.DATASET_PUBLISH,
+                user_id=by,
+                project_id=project_id,
+                object_id=version_id,
+                dedup_key=str(version_id),
+                trace_id=trace_id,
+            )
+            return version
 
     async def _transfer(self, dataset_id: UUID, version_id: UUID, manifest_uri: str) -> Manifest:
         source_key = self._storage.key(manifest_uri)

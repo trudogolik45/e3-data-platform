@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from e3 import audit
 from e3.identity import Principal, ProjectAccessDenied, Role, authorize, current_principal
 from e3.pipelines import PipelineArchived, PipelineNotFound
 from e3.runs.attempts import AttemptReason, AttemptState
@@ -82,6 +83,7 @@ def get_orchestrator(request: Request) -> RunOrchestrator:
 
 OrchestratorDep = Annotated[RunOrchestrator, Depends(get_orchestrator)]
 PrincipalDep = Annotated[Principal, Depends(current_principal)]
+AuditLogDep = Annotated[audit.AuditLog, Depends(audit.audit_log)]
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -90,6 +92,7 @@ async def start_run(
     idempotency_key: Annotated[str, Header(min_length=1, max_length=200)],
     orchestrator: OrchestratorDep,
     principal: PrincipalDep,
+    log: AuditLogDep,
 ) -> PipelineRunOut:
     try:
         run = await orchestrator.start(principal, body, idempotency_key=idempotency_key)
@@ -97,7 +100,13 @@ async def start_run(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Pipeline не найден") from None
     except PipelineArchived:
         raise HTTPException(status.HTTP_409_CONFLICT, "Pipeline в архиве") from None
-    except ProjectAccessDenied:
+    except ProjectAccessDenied as denied:
+        await log.denied(
+            audit.AuditAction.PIPELINE_RUN_CREATE,
+            user_id=principal.user_id,
+            project_id=denied.project_id,
+            object_id=body.pipeline_id,
+        )
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
     except RunRequestInvalid as invalid:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(invalid)) from None
@@ -117,15 +126,25 @@ async def get_run(
 
 @router.post("/{pipeline_run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
 async def cancel_run(
-    pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep
+    pipeline_run_id: UUID, orchestrator: OrchestratorDep, principal: PrincipalDep, log: AuditLogDep
 ) -> PipelineRunOut:
     """Запрос принят, а не Spark остановлен: CANCELLED наступит после доказанной остановки."""
-    await _accessible_run(orchestrator, principal, pipeline_run_id, Role.EDITOR)
+    run = await _existing_run(orchestrator, pipeline_run_id)
     try:
-        run = await orchestrator.cancel(pipeline_run_id)
+        authorize(principal, run.project_id, Role.EDITOR)
+    except ProjectAccessDenied as denied:
+        await log.denied(
+            audit.AuditAction.PIPELINE_RUN_CANCEL,
+            user_id=principal.user_id,
+            project_id=denied.project_id,
+            object_id=pipeline_run_id,
+        )
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
+    try:
+        cancelled = await orchestrator.cancel(pipeline_run_id, by=principal.user_id)
     except RunNotCancellable:
         raise HTTPException(status.HTTP_409_CONFLICT, "PipelineRun уже завершён") from None
-    return _run_out(run)
+    return _run_out(cancelled)
 
 
 @router.get("/{pipeline_run_id}/nodes")
@@ -139,15 +158,19 @@ async def list_nodes(
 async def _accessible_run(
     orchestrator: RunOrchestrator, principal: Principal, pipeline_run_id: UUID, minimum: Role
 ) -> PipelineRun:
-    try:
-        run = await orchestrator.get_run(pipeline_run_id)
-    except PipelineRunNotFound:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "PipelineRun не найден") from None
+    run = await _existing_run(orchestrator, pipeline_run_id)
     try:
         authorize(principal, run.project_id, minimum)
     except ProjectAccessDenied:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "нет доступа к Project") from None
     return run
+
+
+async def _existing_run(orchestrator: RunOrchestrator, pipeline_run_id: UUID) -> PipelineRun:
+    try:
+        return await orchestrator.get_run(pipeline_run_id)
+    except PipelineRunNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "PipelineRun не найден") from None
 
 
 def _run_out(run: PipelineRun) -> PipelineRunOut:

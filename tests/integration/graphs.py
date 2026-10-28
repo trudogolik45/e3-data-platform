@@ -71,6 +71,20 @@ def read_graph(block: str) -> Graph:
     }
 
 
+def join_graph(block: str) -> Graph:
+    """`left`, `right` → Join → Publish Dataset(result): у одного узла два входа-слота."""
+    return {
+        "input_slots": [{"name": "left"}, {"name": "right"}],
+        "output_slots": [{"name": "result"}],
+        "nodes": [block_node("join", block), publish_node("publish", "result")],
+        "edges": [
+            edge(slot("left"), at("join", "left")),
+            edge(slot("right"), at("join", "right")),
+            edge(at("join", "data"), at("publish", "data")),
+        ],
+    }
+
+
 def read_beside_side_graph(read: str, side: str) -> Graph:
     """`source → Read → Publish Dataset(result)` и рядом независимый `source → Side`."""
     graph = read_graph(read)

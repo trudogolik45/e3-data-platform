@@ -9,7 +9,7 @@ from botocore.config import Config
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from e3 import blocks, catalog, identity, pipelines, runs
+from e3 import audit, blocks, catalog, identity, pipelines, runs
 from e3.settings import Settings
 from e3.shared.storage import ObjectStorage
 
@@ -30,6 +30,7 @@ def create_app(
         create_async_engine(settings.database_url), expire_on_commit=False
     )
     app.state.identity = identity.IdentityService(sessions)
+    app.state.audit = audit.AuditLog(sessions)
     app.state.authenticator = _authenticator(settings, app.state.identity, oidc_http)
     storage = storage or create_storage(settings)
     app.state.catalog = catalog.Catalog(
